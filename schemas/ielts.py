@@ -1,10 +1,10 @@
 from pydantic import BaseModel, Field, model_validator, field_validator
-from typing import Optional, List, Any, Dict, Literal
+from typing import Optional, List, Any, Dict, Literal, Union
 from datetime import datetime
 from schemas.enums import (
     TestType,
     ModuleType, SectionType, SectionPart, QuestionType, WritingQuestionType, SpeakingQuestionType,
-    WritingCriteria, SpeakingCriteria, TestStatus
+    WritingCriteria, SpeakingCriteria, TestStatus, SessionMode, SectionStatus
 )
 
 
@@ -121,6 +121,9 @@ class SummaryItem(BaseModel):
 
 # ── Base Question ──────────────────────────────────────────────
 
+AnyQuestionType = Union[QuestionType, WritingQuestionType, SpeakingQuestionType]
+
+
 class QuestionBase(BaseModel):
     # ── Core fields ───────────────────────────────────────────
     title:          str             = Field(..., min_length=3, max_length=300)
@@ -128,7 +131,7 @@ class QuestionBase(BaseModel):
     section_part:   SectionPart
     test_type:      TestType
     module_type:    ModuleType
-    type:           QuestionType
+    type:           AnyQuestionType
     tags:           List[str]       = Field(default=[])
     context:        Optional[str]   = Field(default=None, examples=["You hear two people discussing..."])
     instruction:    str             = Field(..., min_length=3)
@@ -186,7 +189,7 @@ class QuestionBase(BaseModel):
         if t in {QuestionType.MAP_LABELLING, QuestionType.PLAN_LABELLING, QuestionType.DIAGRAM_LABELLING}:
             if not self.map_slots:
                 raise ValueError(f"{t} requires 'map_slots'")
-        if t in {QuestionType.MATCHING, QuestionType.MATCHING_FEATURES} and not self.matching_items:
+        if t in {QuestionType.MATCHING, QuestionType.MATCHING_FEATURES, QuestionType.MATCHING_INFORMATION} and not self.matching_items:
             raise ValueError(f"{t} requires 'matching_items'")
         if t == QuestionType.MATCHING_HEADINGS and not self.heading_items:
             raise ValueError("matching_headings requires 'heading_items'")
@@ -258,7 +261,7 @@ class QuestionSafe(BaseModel):
     section_part: SectionPart
     test_type:    TestType
     module_type:  ModuleType
-    type:         QuestionType
+    type:         AnyQuestionType
     context:      Optional[str]  = None
     instruction:  str
     passage:      Optional[str]  = None
@@ -295,37 +298,76 @@ class PaginatedResponse(BaseModel):
     total: int
     page: int
     page_size: int
+    total_pages: int = 1
     total_pages: int
+
+
+# ─────────────────────────────────────────────
+# Test module structure
+# ─────────────────────────────────────────────
+
+class ListeningSection(BaseModel):
+    """One of the 4 IELTS listening sections with its own audio track."""
+    section_number: int = Field(..., ge=1, le=4)
+    audio_url: str = Field(..., description="URL of the audio recording for this section")
+    question_ids: List[str] = Field(default=[])
+
+class ListeningModule(BaseModel):
+    sections: List[ListeningSection] = Field(..., min_length=1, max_length=4)
+
+class ReadingSection(BaseModel):
+    """One of the 3 IELTS reading passages."""
+    section_number: int = Field(..., ge=1, le=3)
+    passage: str = Field(..., description="Full text of the reading passage")
+    question_ids: List[str] = Field(default=[])
+
+class ReadingModule(BaseModel):
+    sections: List[ReadingSection] = Field(..., min_length=1, max_length=3)
+
+class WritingTask(BaseModel):
+    """One of the 2 IELTS writing tasks."""
+    task_number: int = Field(..., ge=1, le=2)
+    description: str = Field(..., description="Task prompt / instructions")
+    image_url: Optional[str] = Field(default=None, description="Optional image/chart/graph (Task 1 only)")
+
+class WritingModule(BaseModel):
+    tasks: List[WritingTask] = Field(..., min_length=1, max_length=2)
+
+class SpeakingPart(BaseModel):
+    """One of the 3 IELTS speaking parts."""
+    part_number: int = Field(..., ge=1, le=3)
+    question_ids: List[str] = Field(default=[])
+
+class SpeakingModule(BaseModel):
+    parts: List[SpeakingPart] = Field(..., min_length=1, max_length=3)
 
 
 # ─────────────────────────────────────────────
 # Test (exam paper) schemas
 # ─────────────────────────────────────────────
 
-class SectionConfig(BaseModel):
-    """Questions grouped under one section of a test."""
-    section:      SectionType
-    section_part: SectionPart
-    question_ids: List[str] = Field(..., min_length=1)
-    time_limit_minutes: Optional[int] = None
-
 class TestCreate(BaseModel):
     title:       str = Field(..., min_length=3, max_length=200)
     description: Optional[str] = None
     test_type:   TestType = TestType.IELTS
     module_type: ModuleType = ModuleType.ACADEMIC
-    sections:    List[SectionConfig] = Field(..., min_length=1)
     is_published: bool = False
-    time_limit_minutes: int = Field(default=IELTS_TOTAL_DURATION_MINUTES, ge=1)
     tags:        List[str] = []
+    # Modules — all optional; add sections later via tests/section/add
+    listening: Optional[ListeningModule] = None
+    reading:   Optional[ReadingModule]   = None
+    writing:   Optional[WritingModule]   = None
+    speaking:  Optional[SpeakingModule]  = None
 
 class TestUpdate(BaseModel):
     title:       Optional[str] = None
     description: Optional[str] = None
-    sections:    Optional[List[SectionConfig]] = None
     is_published: Optional[bool] = None
-    time_limit_minutes: Optional[int] = None
     tags:        Optional[List[str]] = None
+    listening:   Optional[ListeningModule] = None
+    reading:     Optional[ReadingModule]   = None
+    writing:     Optional[WritingModule]   = None
+    speaking:    Optional[SpeakingModule]  = None
 
 class TestOut(BaseModel):
     id:           str
@@ -333,11 +375,13 @@ class TestOut(BaseModel):
     description:  Optional[str] = None
     test_type:    TestType
     module_type:  ModuleType
-    sections:     List[SectionConfig]
     is_published: bool
-    time_limit_minutes: int
     tags:         List[str] = []
     question_count: int = 0
+    listening:    Optional[ListeningModule] = None
+    reading:      Optional[ReadingModule]   = None
+    writing:      Optional[WritingModule]   = None
+    speaking:     Optional[SpeakingModule]  = None
     created_at:   datetime
     updated_at:   Optional[datetime] = None
 
@@ -345,8 +389,77 @@ class TestOut(BaseModel):
 
 
 # ─────────────────────────────────────────────
+# Test builder schemas (section/part management)
+# ─────────────────────────────────────────────
+
+class TestSectionAdd(BaseModel):
+    """Add a section/part/task to an existing test."""
+    test_id: str
+    module: Literal["listening", "reading", "writing", "speaking"]
+    # listening / reading
+    section_number: Optional[int] = Field(default=None, ge=1, le=4)
+    audio_url: Optional[str] = None   # listening only
+    passage: Optional[str] = None     # reading only
+    # writing
+    task_number: Optional[int] = Field(default=None, ge=1, le=2)
+    description: Optional[str] = None
+    image_url: Optional[str] = None
+    # speaking
+    part_number: Optional[int] = Field(default=None, ge=1, le=3)
+
+class TestSectionUpdate(BaseModel):
+    """Update metadata of an existing section/part/task."""
+    test_id: str
+    module: Literal["listening", "reading", "writing", "speaking"]
+    number: int = Field(..., ge=1, description="section_number / task_number / part_number")
+    audio_url: Optional[str] = None
+    passage: Optional[str] = None
+    description: Optional[str] = None
+    image_url: Optional[str] = None
+
+class TestSectionRemove(BaseModel):
+    """Remove a section/part/task from a test."""
+    test_id: str
+    module: Literal["listening", "reading", "writing", "speaking"]
+    number: int = Field(..., ge=1, description="section_number / task_number / part_number")
+
+class TestSectionQuestionAdd(BaseModel):
+    """Add an existing question to a test section."""
+    test_id: str
+    section_part: SectionPart
+    question_id: str
+
+class TestSectionQuestionRemove(BaseModel):
+    """Remove a question from a test section."""
+    test_id: str
+    section_part: SectionPart
+    question_id: str
+
+
+# ─────────────────────────────────────────────
 # Test Session (user attempt) schemas
 # ─────────────────────────────────────────────
+
+# IELTS standard section order and time limits for FULL_TEST mode
+IELTS_SECTION_ORDER: List[str] = ["listening", "reading", "writing", "speaking"]
+IELTS_SECTION_TIME_SECONDS: Dict[str, int] = {
+    "listening": 30 * 60,   # 30 min
+    "reading":   60 * 60,   # 60 min
+    "writing":   60 * 60,   # 60 min
+    "speaking":  15 * 60,   # 15 min
+}
+
+
+class SessionSectionState(BaseModel):
+    """Tracks the progress of a single section within a session."""
+    section:            SectionType
+    order_index:        int
+    status:             SectionStatus = SectionStatus.NOT_STARTED
+    time_limit_seconds: Optional[int] = None
+    started_at:         Optional[datetime] = None
+    completed_at:       Optional[datetime] = None
+    time_spent_seconds: Optional[int] = None
+
 
 class AnswerSubmission(BaseModel):
     question_id: str
@@ -358,6 +471,21 @@ class SectionAnswers(BaseModel):
 
 class StartTestRequest(BaseModel):
     test_id: str
+    mode:    SessionMode = SessionMode.FULL_TEST
+    section: Optional[SectionType] = Field(
+        default=None,
+        description="Required for PRACTICE mode — the single section to practice."
+    )
+
+class StartSectionRequest(BaseModel):
+    """Begin the current section (starts the timer). FULL_TEST only."""
+    session_id: str
+
+class SubmitSectionRequest(BaseModel):
+    """Submit answers for the current section and advance to the next."""
+    session_id: str
+    section:    SectionType
+    answers:    List[AnswerSubmission] = []
 
 class SubmitAnswersRequest(BaseModel):
     session_id: str
@@ -378,6 +506,7 @@ class SessionResult(BaseModel):
     session_id:     str
     test_id:        str
     user_id:        str
+    mode:           SessionMode = SessionMode.FULL_TEST
     status:         TestStatus
     section_scores: List[SectionScore] = []
     overall_band:   Optional[float] = None
@@ -386,18 +515,22 @@ class SessionResult(BaseModel):
     time_spent_seconds: Optional[int] = None
 
 class TestSessionOut(BaseModel):
-    id:              str
-    test_id:         str
-    user_id:         str
-    status:          TestStatus
-    answers:         Dict[str, Any] = {}
-    section_scores:  List[SectionScore] = []
-    overall_band:    Optional[float] = None
-    started_at:      datetime
-    finished_at:     Optional[datetime] = None
+    id:               str
+    test_id:          str
+    user_id:          str
+    mode:             SessionMode = SessionMode.FULL_TEST
+    practice_section: Optional[str] = None
+    status:           TestStatus
+    current_section:  Optional[str] = None
+    session_sections: List[Any] = []
+    answers:          Dict[str, Any] = {}
+    section_scores:   List[SectionScore] = []
+    overall_band:     Optional[float] = None
+    started_at:       datetime
+    finished_at:      Optional[datetime] = None
     time_spent_seconds: Optional[int] = None
-    created_at:      datetime
-    updated_at:      Optional[datetime] = None
+    created_at:       datetime
+    updated_at:       Optional[datetime] = None
 
     model_config = {"from_attributes": True}
 

@@ -19,6 +19,7 @@ from schemas.ielts import (
     QuestionCreate,
     QuestionUpdate,
     SectionAnswers,
+    SubmitSectionRequest,
     TestCreate,
     TestUpdate,
 )
@@ -207,10 +208,11 @@ async def question_bulk_create(data: dict):
 @register(
     name="tests/create",
     method="POST",
-    required_keys=["title", "sections"],
+    required_keys=["title"],
     optional_keys={
         "description": None, "test_type": "ielts", "module_type": "academic",
-        "is_published": False, "time_limit_minutes": 164, "tags": [],
+        "is_published": False, "tags": [],
+        "listening": None, "reading": None, "writing": None, "speaking": None,
     },
     summary="Create test",
     description="Create a new exam paper composed of questions (admin/examiner).",
@@ -271,8 +273,9 @@ async def test_get(data: dict):
     method="PUT",
     required_keys=["test_id"],
     optional_keys={
-        "title": None, "description": None, "sections": None,
-        "is_published": None, "time_limit_minutes": None, "tags": None,
+        "title": None, "description": None,
+        "is_published": None, "tags": None,
+        "listening": None, "reading": None, "writing": None, "speaking": None,
     },
     summary="Update test",
     description="Partially update a test (admin/examiner only).",
@@ -316,6 +319,107 @@ async def test_publish(data: dict):
 
 
 # ═════════════════════════════════════════════
+#  TEST BUILDER — section/part management
+# ═════════════════════════════════════════════
+
+@register(
+    name="tests/section/add",
+    method="POST",
+    required_keys=["test_id", "module"],
+    optional_keys={
+        "section_number": None,
+        "audio_url": None,
+        "passage": None,
+        "task_number": None,
+        "description": None,
+        "image_url": None,
+        "part_number": None,
+    },
+    summary="Add section/part to test",
+    description=(
+        "Add a section or part to an existing test.\n\n"
+        "- **listening**: provide `section_number` (1-4) and `audio_url`\n"
+        "- **reading**: provide `section_number` (1-3) and `passage`\n"
+        "- **writing**: provide `task_number` (1-2) and `description`; optional `image_url`\n"
+        "- **speaking**: provide `part_number` (1-3)"
+    ),
+    tags=["Tests"],
+)
+async def test_section_add(data: dict):
+    await _require_admin_or_examiner(data)
+    test_id = data.pop("test_id")
+    module = data.pop("module")
+    _clean_meta(data)
+    return await _ielts_service().add_section_to_test(test_id, module, data)
+
+
+@register(
+    name="tests/section/update",
+    method="PUT",
+    required_keys=["test_id", "module", "number"],
+    optional_keys={"audio_url": None, "passage": None, "description": None, "image_url": None},
+    summary="Update section/part metadata",
+    description="Update the audio_url, passage, description, or image_url of an existing section.",
+    tags=["Tests"],
+)
+async def test_section_update(data: dict):
+    await _require_admin_or_examiner(data)
+    test_id = data.pop("test_id")
+    module = data.pop("module")
+    number = int(data.pop("number"))
+    _clean_meta(data)
+    update_fields = {k: v for k, v in data.items() if v is not None}
+    return await _ielts_service().update_test_section(test_id, module, number, update_fields)
+
+
+@register(
+    name="tests/section/remove",
+    method="DELETE",
+    required_keys=["test_id", "module", "number"],
+    summary="Remove section/part from test",
+    description="Remove a listening section, reading passage, writing task, or speaking part from a test.",
+    tags=["Tests"],
+)
+async def test_section_remove(data: dict):
+    await _require_admin_or_examiner(data)
+    return await _ielts_service().remove_section_from_test(data["test_id"], data["module"], int(data["number"]))
+
+
+@register(
+    name="tests/section/question/add",
+    method="POST",
+    required_keys=["test_id", "section_part", "question_id"],
+    summary="Add question to test section",
+    description=(
+        "Add an existing question to a specific section/part of a test.\n\n"
+        "`section_part` values: `listening_section_1..4`, `reading_passage_1..3`, `speaking_part_1..3`\n\n"
+        "Writing tasks do not use this endpoint — they reference questions via the question's `section_part`."
+    ),
+    tags=["Tests"],
+)
+async def test_section_question_add(data: dict):
+    await _require_admin_or_examiner(data)
+    return await _ielts_service().add_question_to_test_section(
+        data["test_id"], data["section_part"], data["question_id"]
+    )
+
+
+@register(
+    name="tests/section/question/remove",
+    method="POST",
+    required_keys=["test_id", "section_part", "question_id"],
+    summary="Remove question from test section",
+    description="Remove a question from a specific section/part of a test.",
+    tags=["Tests"],
+)
+async def test_section_question_remove(data: dict):
+    await _require_admin_or_examiner(data)
+    return await _ielts_service().remove_question_from_test_section(
+        data["test_id"], data["section_part"], data["question_id"]
+    )
+
+
+# ═════════════════════════════════════════════
 #  TEST-TAKING (candidates)
 # ═════════════════════════════════════════════
 
@@ -323,13 +427,73 @@ async def test_publish(data: dict):
     name="sessions/start",
     method="POST",
     required_keys=["test_id"],
+    optional_keys={
+        "mode": "full_test",   # "full_test" | "practice"
+        "section": None,       # required when mode == "practice"
+    },
     summary="Start test session",
-    description="Start a new test session for the authenticated user.",
+    description=(
+        "Start a new test session. "
+        "Use mode='full_test' for a complete simulated IELTS exam (all 4 sections in order). "
+        "Use mode='practice' with a 'section' value to practice a single section."
+    ),
     tags=["Sessions"],
 )
 async def session_start(data: dict):
     user = await _require_auth(data)
-    return await _ielts_service().start_test(user.id, data["test_id"])
+    return await _ielts_service().start_test(
+        user_id=user.id,
+        test_id=data["test_id"],
+        mode=data.get("mode", "full_test"),
+        section=data.get("section"),
+    )
+
+
+@register(
+    name="sessions/section/start",
+    method="POST",
+    required_keys=["session_id"],
+    summary="Start current section",
+    description=(
+        "Explicitly start the current section's timer. "
+        "For FULL_TEST mode — call this when the candidate is ready to begin the section. "
+        "The timer auto-starts on the first question fetch as well."
+    ),
+    tags=["Sessions"],
+)
+async def session_section_start(data: dict):
+    user = await _require_auth(data)
+    return await _ielts_service().start_section(user.id, data["session_id"])
+
+
+@register(
+    name="sessions/section/submit",
+    method="POST",
+    required_keys=["session_id", "section"],
+    optional_keys={"answers": []},
+    summary="Submit section answers",
+    description=(
+        "Submit answers for the current section and advance to the next one. "
+        "For FULL_TEST: automatically moves current_section to the next section. "
+        "For PRACTICE: marks the session ready for finalization. "
+        "Call /sessions/finalize after all sections are submitted."
+    ),
+    tags=["Sessions"],
+)
+async def session_section_submit(data: dict):
+    user = await _require_auth(data)
+    raw_answers = data.get("answers", [])
+    try:
+        from schemas.ielts import AnswerSubmission
+        answers = [AnswerSubmission(**a) if isinstance(a, dict) else a for a in raw_answers]
+    except (ValidationError, TypeError) as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+    return await _ielts_service().submit_section_answers(
+        user_id=user.id,
+        session_id=data["session_id"],
+        section=data["section"],
+        answers=answers,
+    )
 
 
 @register(

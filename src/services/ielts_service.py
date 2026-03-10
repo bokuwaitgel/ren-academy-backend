@@ -11,21 +11,25 @@ from schemas.enums import (
     ModuleType,
     QuestionType,
     SectionType,
+    SectionStatus,
+    SessionMode,
     TestStatus,
     WritingQuestionType,
     SpeakingQuestionType,
 )
 from schemas.ielts import (
     AnswerSubmission,
+    IELTS_SECTION_ORDER,
+    IELTS_SECTION_TIME_SECONDS,
     PaginatedResponse,
     QuestionCreate,
     QuestionOut,
     QuestionSafe,
     QuestionUpdate,
     SectionAnswers,
-    SectionConfig,
     SectionScore,
     SessionResult,
+    SubmitSectionRequest,
     TestCreate,
     TestOut,
     TestSessionOut,
@@ -240,6 +244,30 @@ def _score_fill_items(items: list, answer_key: str, user_answer: Any) -> tuple[i
 
 
 # ─────────────────────────────────────────────
+# Module structure helpers
+# ─────────────────────────────────────────────
+
+def _get_available_sections(test: dict) -> List[str]:
+    """Returns which of the 4 IELTS sections are present in the test, in standard order."""
+    return [s for s in IELTS_SECTION_ORDER if test.get(s)]
+
+
+def _get_question_ids_for_section(test: dict, section: str) -> List[str]:
+    """Returns all question IDs for a given section from the module structure."""
+    ids: List[str] = []
+    if section == "listening":
+        for sec in (test.get("listening") or {}).get("sections", []):
+            ids.extend(sec.get("question_ids", []))
+    elif section == "reading":
+        for sec in (test.get("reading") or {}).get("sections", []):
+            ids.extend(sec.get("question_ids", []))
+    elif section == "speaking":
+        for part in (test.get("speaking") or {}).get("parts", []):
+            ids.extend(part.get("question_ids", []))
+    return ids
+
+
+# ─────────────────────────────────────────────
 # Service class
 # ─────────────────────────────────────────────
 
@@ -348,9 +376,16 @@ class IeltsService:
 
     async def create_test(self, payload: TestCreate) -> TestOut:
         # Validate all referenced question IDs exist
-        all_qids = []
-        for sec in payload.sections:
-            all_qids.extend(sec.question_ids)
+        all_qids: List[str] = []
+        if payload.listening:
+            for sec in payload.listening.sections:
+                all_qids.extend(sec.question_ids)
+        if payload.reading:
+            for sec in payload.reading.sections:
+                all_qids.extend(sec.question_ids)
+        if payload.speaking:
+            for part in payload.speaking.parts:
+                all_qids.extend(part.question_ids)
 
         unique_qids = list(set(all_qids))
         existing_questions = await self.question_repo.find_many(unique_qids)
@@ -408,11 +443,15 @@ class IeltsService:
         if not update_data:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No fields to update")
 
-        # Re-validate question IDs if sections changed
-        if "sections" in update_data:
-            all_qids = []
-            for sec in update_data["sections"]:
-                all_qids.extend(sec["question_ids"])
+        # Re-validate question IDs if any module changed
+        all_qids: List[str] = []
+        for mod_key, sub_key in [("listening", "sections"), ("reading", "sections"), ("speaking", "parts")]:
+            module = update_data.get(mod_key)
+            if module is None:
+                continue
+            for item in module.get(sub_key, []):
+                all_qids.extend(item.get("question_ids", []))
+        if all_qids:
             unique_qids = list(set(all_qids))
             existing_questions = await self.question_repo.find_many(unique_qids)
             existing_ids = {q["id"] for q in existing_questions}
@@ -449,29 +488,91 @@ class IeltsService:
 
     # ── Test-taking (sessions) ────────────────
 
-    async def start_test(self, user_id: str, test_id: str) -> TestSessionOut:
+    async def start_test(
+        self,
+        user_id: str,
+        test_id: str,
+        mode: str = SessionMode.FULL_TEST.value,
+        section: Optional[str] = None,
+    ) -> TestSessionOut:
         test = await self.test_repo.find_by_id(test_id)
         if not test:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Test not found")
         if not test.get("is_published"):
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Test is not published yet")
 
-        # Check for existing in-progress session
-        existing = await self.session_repo.col.find_one({
+        test_section_values = _get_available_sections(test)
+
+        if mode == SessionMode.PRACTICE.value:
+            if not section:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="'section' is required for practice mode",
+                )
+            if section not in test_section_values:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Section '{section}' not found in this test",
+                )
+
+        # Check for existing in-progress session of same mode (+ section for practice)
+        in_progress_query: Dict[str, Any] = {
             "user_id": user_id,
             "test_id": test_id,
+            "mode": mode,
             "status": TestStatus.IN_PROGRESS.value,
-        })
+        }
+        if mode == SessionMode.PRACTICE.value:
+            in_progress_query["practice_section"] = section
+        existing = await self.session_repo.col.find_one(in_progress_query)
         if existing:
             from src.database.repositories.ielts_repository import _serialize
             return TestSessionOut(**_serialize(existing))
 
-        session_data = {
+        # Build session_sections based on mode
+        if mode == SessionMode.FULL_TEST.value:
+            # All sections present in the test, ordered by IELTS standard order
+            session_sections = []
+            order_index = 0
+            for sec_val in IELTS_SECTION_ORDER:
+                if sec_val not in test_section_values:
+                    continue
+                time_limit_secs = IELTS_SECTION_TIME_SECONDS.get(sec_val)
+                session_sections.append({
+                    "section": sec_val,
+                    "order_index": order_index,
+                    "status": SectionStatus.NOT_STARTED.value,
+                    "time_limit_seconds": time_limit_secs,
+                    "started_at": None,
+                    "completed_at": None,
+                    "time_spent_seconds": None,
+                })
+                order_index += 1
+            current_section = session_sections[0]["section"] if session_sections else None
+        else:
+            # PRACTICE — single section only
+            time_limit_secs = IELTS_SECTION_TIME_SECONDS.get(section)
+            session_sections = [{
+                "section": section,
+                "order_index": 0,
+                "status": SectionStatus.NOT_STARTED.value,
+                "time_limit_seconds": time_limit_secs,
+                "started_at": None,
+                "completed_at": None,
+                "time_spent_seconds": None,
+            }]
+            current_section = section
+
+        session_data: Dict[str, Any] = {
             "test_id": test_id,
             "user_id": user_id,
             "test_type": test.get("test_type", "ielts"),
             "module_type": test.get("module_type", "academic"),
+            "mode": mode,
+            "practice_section": section if mode == SessionMode.PRACTICE.value else None,
             "status": TestStatus.IN_PROGRESS.value,
+            "current_section": current_section,
+            "session_sections": session_sections,
             "answers": {},
             "section_scores": [],
             "overall_band": None,
@@ -483,36 +584,198 @@ class IeltsService:
         doc = await self.session_repo.create(session_data)
         return TestSessionOut(**doc)
 
+    async def start_section(self, user_id: str, session_id: str) -> TestSessionOut:
+        """
+        Mark the current section as IN_PROGRESS (starts the timer).
+        For FULL_TEST only — PRACTICE sessions auto-start on question fetch.
+        """
+        session = await self._get_session_or_fail(session_id)
+        if session["user_id"] != user_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not your session")
+        if session["status"] != TestStatus.IN_PROGRESS.value:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Session is not in progress")
+
+        current_section = session.get("current_section")
+        if not current_section:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="All sections are completed")
+
+        session_sections = session.get("session_sections", [])
+        updated = False
+        for sec in session_sections:
+            if sec["section"] == current_section:
+                if sec["status"] == SectionStatus.IN_PROGRESS.value:
+                    # Already started — idempotent, just return
+                    return TestSessionOut(**session)
+                if sec["status"] != SectionStatus.NOT_STARTED.value:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f"Section '{current_section}' is already {sec['status']}",
+                    )
+                sec["status"] = SectionStatus.IN_PROGRESS.value
+                sec["started_at"] = datetime.now(timezone.utc)
+                updated = True
+                break
+
+        if not updated:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Current section not found in session")
+
+        doc = await self.session_repo.update(session_id, {"session_sections": session_sections})
+        return TestSessionOut(**doc)
+
+    async def submit_section_answers(
+        self,
+        user_id: str,
+        session_id: str,
+        section: str,
+        answers: List[AnswerSubmission],
+    ) -> TestSessionOut:
+        """
+        Save answers for the given section, mark it COMPLETED, and advance
+        current_section to the next NOT_STARTED section (FULL_TEST) or None (PRACTICE).
+        """
+        session = await self._get_session_or_fail(session_id)
+        if session["user_id"] != user_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not your session")
+        if session["status"] != TestStatus.IN_PROGRESS.value:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Session is not in progress")
+
+        current_section = session.get("current_section")
+        if section != current_section:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Cannot submit '{section}' — current section is '{current_section}'",
+            )
+
+        # Save answers
+        existing_answers: Dict[str, Any] = session.get("answers", {})
+        if section not in existing_answers:
+            existing_answers[section] = {}
+        for ans in answers:
+            existing_answers[section][ans.question_id] = ans.answer
+
+        # Mark section COMPLETED and record timing
+        now = datetime.now(timezone.utc)
+        session_sections = session.get("session_sections", [])
+        for sec in session_sections:
+            if sec["section"] == section:
+                # Auto-start if not already started (covers PRACTICE flow)
+                if sec["status"] == SectionStatus.NOT_STARTED.value:
+                    sec["started_at"] = now
+                sec["status"] = SectionStatus.COMPLETED.value
+                sec["completed_at"] = now
+                started = sec.get("started_at")
+                if started:
+                    if isinstance(started, str):
+                        started = datetime.fromisoformat(started)
+                    if started.tzinfo is None:
+                        started = started.replace(tzinfo=timezone.utc)
+                    sec["time_spent_seconds"] = int((now - started).total_seconds())
+                break
+
+        # Advance current_section to next NOT_STARTED section
+        next_section: Optional[str] = None
+        for sec in session_sections:
+            if sec["status"] == SectionStatus.NOT_STARTED.value:
+                next_section = sec["section"]
+                break
+
+        doc = await self.session_repo.update(session_id, {
+            "answers": existing_answers,
+            "session_sections": session_sections,
+            "current_section": next_section,
+        })
+        return TestSessionOut(**doc)
+
     async def get_test_questions_for_session(self, user_id: str, session_id: str) -> dict:
-        """Return test questions with answers stripped for the candidate."""
+        """
+        Return questions for the current section (answers stripped).
+        - FULL_TEST: returns only the current section's questions.
+        - PRACTICE: returns the single section's questions.
+        Also auto-starts the section timer if it's still NOT_STARTED.
+        """
         session = await self._get_session_or_fail(session_id)
         if session["user_id"] != user_id:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not your session")
         if session["status"] not in {TestStatus.IN_PROGRESS.value, TestStatus.NOT_STARTED.value}:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Session is not in progress")
 
+        current_section = session.get("current_section")
+        if not current_section:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="All sections are already completed")
+
         test = await self.test_repo.find_by_id(session["test_id"])
         if not test:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Test not found")
 
-        sections_out = []
-        for section_cfg in test.get("sections", []):
-            q_ids = section_cfg.get("question_ids", [])
-            questions = await self.question_repo.find_many(q_ids)
-            safe_questions = [_strip_answers(q) for q in questions]
-            sections_out.append({
-                "section": section_cfg["section"],
-                "section_part": section_cfg["section_part"],
-                "time_limit_minutes": section_cfg.get("time_limit_minutes"),
-                "questions": safe_questions,
-            })
+        # Auto-start timer for the current section if NOT_STARTED
+        session_sections = session.get("session_sections", [])
+        for sec in session_sections:
+            if sec["section"] == current_section and sec["status"] == SectionStatus.NOT_STARTED.value:
+                sec["status"] = SectionStatus.IN_PROGRESS.value
+                sec["started_at"] = datetime.now(timezone.utc)
+                await self.session_repo.update(session_id, {"session_sections": session_sections})
+                break
+
+        # Build section output with sub-section detail based on module structure
+        time_limit_secs = next(
+            (s.get("time_limit_seconds") for s in session_sections if s["section"] == current_section),
+            None,
+        )
+        section_out: dict = {"section": current_section, "time_limit_seconds": time_limit_secs}
+
+        if current_section == SectionType.LISTENING.value:
+            sub_sections = []
+            for sec in (test.get("listening") or {}).get("sections", []):
+                q_ids = sec.get("question_ids", [])
+                questions = await self.question_repo.find_many(q_ids)
+                sub_sections.append({
+                    "section_number": sec["section_number"],
+                    "audio_url": sec.get("audio_url"),
+                    "questions": [_strip_answers(q) for q in questions],
+                })
+            section_out["sub_sections"] = sub_sections
+
+        elif current_section == SectionType.READING.value:
+            sub_sections = []
+            for sec in (test.get("reading") or {}).get("sections", []):
+                q_ids = sec.get("question_ids", [])
+                questions = await self.question_repo.find_many(q_ids)
+                sub_sections.append({
+                    "section_number": sec["section_number"],
+                    "passage": sec.get("passage"),
+                    "questions": [_strip_answers(q) for q in questions],
+                })
+            section_out["sub_sections"] = sub_sections
+
+        elif current_section == SectionType.WRITING.value:
+            tasks = []
+            for task in (test.get("writing") or {}).get("tasks", []):
+                tasks.append({
+                    "task_number": task["task_number"],
+                    "answer_key": f"task_{task['task_number']}",
+                    "description": task.get("description"),
+                    "image_url": task.get("image_url"),
+                })
+            section_out["tasks"] = tasks
+
+        elif current_section == SectionType.SPEAKING.value:
+            parts = []
+            for part in (test.get("speaking") or {}).get("parts", []):
+                q_ids = part.get("question_ids", [])
+                questions = await self.question_repo.find_many(q_ids)
+                parts.append({
+                    "part_number": part["part_number"],
+                    "questions": [_strip_answers(q) for q in questions],
+                })
+            section_out["parts"] = parts
 
         return {
             "session_id": session_id,
             "test_id": session["test_id"],
             "test_title": test.get("title"),
-            "time_limit_minutes": test.get("time_limit_minutes"),
-            "sections": sections_out,
+            "mode": session.get("mode", SessionMode.FULL_TEST.value),
+            "current_section": current_section,
+            "section": section_out,
         }
 
     async def submit_answers(self, user_id: str, session_id: str, sections: List[SectionAnswers]) -> TestSessionOut:
@@ -540,6 +803,20 @@ class IeltsService:
         if session["status"] != TestStatus.IN_PROGRESS.value:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Session is not in progress")
 
+        # For FULL_TEST: ensure all sections are completed before finalizing
+        mode = session.get("mode", SessionMode.FULL_TEST.value)
+        if mode == SessionMode.FULL_TEST.value:
+            session_sections = session.get("session_sections", [])
+            incomplete = [
+                s["section"] for s in session_sections
+                if s["status"] != SectionStatus.COMPLETED.value
+            ]
+            if incomplete:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Cannot finalize: sections not yet completed: {incomplete}",
+                )
+
         test = await self.test_repo.find_by_id(session["test_id"])
         if not test:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Test not found")
@@ -550,10 +827,9 @@ class IeltsService:
         section_scores: List[SectionScore] = []
         band_by_section: Dict[str, float] = {}
 
-        for section_cfg in test.get("sections", []):
-            section_type = section_cfg["section"]
-            q_ids = section_cfg.get("question_ids", [])
-            questions = await self.question_repo.find_many(q_ids)
+        for section_type in _get_available_sections(test):
+            q_ids = _get_question_ids_for_section(test, section_type)
+            questions = await self.question_repo.find_many(q_ids) if q_ids else []
 
             section_answers = answers.get(section_type, {})
             total_earned = 0
@@ -584,9 +860,12 @@ class IeltsService:
                 band_score=band,
             ))
 
-        # Overall band (if all 4 sections present)
+        # Overall band — only calculated for FULL_TEST with all 4 sections
         overall = None
-        if all(s.value in band_by_section for s in [SectionType.LISTENING, SectionType.READING, SectionType.WRITING, SectionType.SPEAKING]):
+        if mode == SessionMode.FULL_TEST.value and all(
+            s.value in band_by_section
+            for s in [SectionType.LISTENING, SectionType.READING, SectionType.WRITING, SectionType.SPEAKING]
+        ):
             overall = calculate_overall_band(
                 band_by_section[SectionType.LISTENING.value],
                 band_by_section[SectionType.READING.value],
@@ -600,6 +879,8 @@ class IeltsService:
         if started_at:
             if isinstance(started_at, str):
                 started_at = datetime.fromisoformat(started_at)
+            if started_at.tzinfo is None:
+                started_at = started_at.replace(tzinfo=timezone.utc)
             time_spent = int((finished_at - started_at).total_seconds())
 
         update_data = {
@@ -615,6 +896,7 @@ class IeltsService:
             session_id=session_id,
             test_id=session["test_id"],
             user_id=user_id,
+            mode=SessionMode(mode),
             status=TestStatus.SUBMITTED,
             section_scores=section_scores,
             overall_band=overall,
@@ -661,6 +943,7 @@ class IeltsService:
             session_id=session_id,
             test_id=session["test_id"],
             user_id=session["user_id"],
+            mode=SessionMode(session.get("mode", SessionMode.FULL_TEST.value)),
             status=TestStatus(session["status"]),
             section_scores=section_scores,
             overall_band=session.get("overall_band"),
@@ -798,6 +1081,88 @@ class IeltsService:
             "users_by_role": users_by_role,
             "sessions_by_status": sessions_by_status,
         }
+
+    # ── Section/Part Builder ──────────────────
+
+    async def add_section_to_test(self, test_id: str, module: str, data: dict) -> TestOut:
+        test = await self.test_repo.find_by_id(test_id)
+        if not test:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Test not found")
+
+        if module == "listening":
+            section_number = data.get("section_number")
+            if not section_number:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="listening requires section_number (1-4)")
+            if not (1 <= section_number <= 4):
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="section_number must be 1-4 for listening")
+            section_data = {"section_number": section_number, "audio_url": data.get("audio_url") or "", "question_ids": []}
+
+        elif module == "reading":
+            section_number = data.get("section_number")
+            if not section_number:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="reading requires section_number (1-3)")
+            if not (1 <= section_number <= 3):
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="section_number must be 1-3 for reading")
+            section_data = {"section_number": section_number, "passage": data.get("passage") or "", "question_ids": []}
+
+        elif module == "writing":
+            task_number = data.get("task_number")
+            if not task_number:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="writing requires task_number (1-2)")
+            if not (1 <= task_number <= 2):
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="task_number must be 1-2 for writing")
+            section_data = {"task_number": task_number, "description": data.get("description") or "", "image_url": data.get("image_url")}
+
+        elif module == "speaking":
+            part_number = data.get("part_number")
+            if not part_number:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="speaking requires part_number (1-3)")
+            if not (1 <= part_number <= 3):
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="part_number must be 1-3 for speaking")
+            section_data = {"part_number": part_number, "question_ids": []}
+
+        else:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="module must be listening, reading, writing, or speaking")
+
+        doc = await self.test_repo.add_section(test_id, module, section_data)
+        return TestOut(**doc)
+
+    async def update_test_section(self, test_id: str, module: str, number: int, update_fields: dict) -> TestOut:
+        test = await self.test_repo.find_by_id(test_id)
+        if not test:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Test not found")
+        doc = await self.test_repo.update_section(test_id, module, number, update_fields)
+        return TestOut(**doc)
+
+    async def remove_section_from_test(self, test_id: str, module: str, number: int) -> TestOut:
+        test = await self.test_repo.find_by_id(test_id)
+        if not test:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Test not found")
+        doc = await self.test_repo.remove_section(test_id, module, number)
+        return TestOut(**doc)
+
+    async def add_question_to_test_section(self, test_id: str, section_part: str, question_id: str) -> TestOut:
+        test = await self.test_repo.find_by_id(test_id)
+        if not test:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Test not found")
+        question = await self.question_repo.find_by_id(question_id)
+        if not question:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Question not found")
+        try:
+            doc = await self.test_repo.add_question_to_section(test_id, section_part, question_id)
+        except ValueError as e:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        return TestOut(**doc)
+
+    async def remove_question_from_test_section(self, test_id: str, section_part: str, question_id: str) -> TestOut:
+        test = await self.test_repo.find_by_id(test_id)
+        if not test:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Test not found")
+        try:
+            doc = await self.test_repo.remove_question_from_section(test_id, section_part, question_id)
+        except ValueError as e:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        return TestOut(**doc)
 
     # ── Private helpers ───────────────────────
 

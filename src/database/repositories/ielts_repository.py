@@ -59,165 +59,6 @@ class QuestionRepository:
         return result.deleted_count == 1
 
 
-# ─────────────────────────────────────────────
-# Listening Sections
-# ─────────────────────────────────────────────
-
-class ListeningSectionRepository:
-    def __init__(self, db: AsyncIOMotorDatabase):
-        self.col = db["listening_sections"]
-
-    async def create(self, data: dict) -> dict:
-        data["created_at"] = datetime.now(timezone.utc)
-        result = await self.col.insert_one(data)
-        data["_id"] = result.inserted_id
-        return _serialize(data)
-
-    async def find_by_id(self, sid: str) -> Optional[dict]:
-        doc = await self.col.find_one({"_id": _oid(sid)})
-        return _serialize(doc) if doc else None
-
-    async def find_many(self, ids: List[str]) -> List[dict]:
-        oids = [_oid(i) for i in ids]
-        cursor = self.col.find({"_id": {"$in": oids}})
-        return [_serialize(d) async for d in cursor]
-
-    async def find_all(self, skip: int = 0, limit: int = 20) -> List[dict]:
-        cursor = self.col.find({}).sort("created_at", -1).skip(skip).limit(limit)
-        return [_serialize(d) async for d in cursor]
-
-    async def count(self) -> int:
-        return await self.col.count_documents({})
-
-    async def update(self, sid: str, data: dict) -> Optional[dict]:
-        data["updated_at"] = datetime.now(timezone.utc)
-        await self.col.update_one({"_id": _oid(sid)}, {"$set": data})
-        return await self.find_by_id(sid)
-
-    async def delete(self, sid: str) -> bool:
-        result = await self.col.delete_one({"_id": _oid(sid)})
-        return result.deleted_count == 1
-
-
-# ─────────────────────────────────────────────
-# Reading Passages
-# ─────────────────────────────────────────────
-
-class PassageRepository:
-    def __init__(self, db: AsyncIOMotorDatabase):
-        self.col = db["reading_passages"]
-
-    async def create(self, data: dict) -> dict:
-        data["created_at"] = datetime.now(timezone.utc)
-        result = await self.col.insert_one(data)
-        data["_id"] = result.inserted_id
-        return _serialize(data)
-
-    async def find_by_id(self, pid: str) -> Optional[dict]:
-        doc = await self.col.find_one({"_id": _oid(pid)})
-        return _serialize(doc) if doc else None
-
-    async def find_many(self, ids: List[str]) -> List[dict]:
-        oids = [_oid(i) for i in ids]
-        cursor = self.col.find({"_id": {"$in": oids}})
-        return [_serialize(d) async for d in cursor]
-
-    async def find_all(self, skip: int = 0, limit: int = 20) -> List[dict]:
-        cursor = self.col.find({}).sort("created_at", -1).skip(skip).limit(limit)
-        return [_serialize(d) async for d in cursor]
-
-    async def count(self) -> int:
-        return await self.col.count_documents({})
-
-    async def update(self, pid: str, data: dict) -> Optional[dict]:
-        data["updated_at"] = datetime.now(timezone.utc)
-        await self.col.update_one({"_id": _oid(pid)}, {"$set": data})
-        return await self.find_by_id(pid)
-
-    async def delete(self, pid: str) -> bool:
-        result = await self.col.delete_one({"_id": _oid(pid)})
-        return result.deleted_count == 1
-
-
-# ─────────────────────────────────────────────
-# Writing Tasks
-# ─────────────────────────────────────────────
-
-class WritingTaskRepository:
-    def __init__(self, db: AsyncIOMotorDatabase):
-        self.col = db["writing_tasks"]
-
-    async def create(self, data: dict) -> dict:
-        data["created_at"] = datetime.now(timezone.utc)
-        result = await self.col.insert_one(data)
-        data["_id"] = result.inserted_id
-        return _serialize(data)
-
-    async def find_by_id(self, tid: str) -> Optional[dict]:
-        doc = await self.col.find_one({"_id": _oid(tid)})
-        return _serialize(doc) if doc else None
-
-    async def find_many(self, ids: List[str]) -> List[dict]:
-        oids = [_oid(i) for i in ids]
-        cursor = self.col.find({"_id": {"$in": oids}})
-        return [_serialize(d) async for d in cursor]
-
-    async def find_all(self, skip: int = 0, limit: int = 20) -> List[dict]:
-        cursor = self.col.find({}).sort("created_at", -1).skip(skip).limit(limit)
-        return [_serialize(d) async for d in cursor]
-
-    async def count(self) -> int:
-        return await self.col.count_documents({})
-
-    async def update(self, tid: str, data: dict) -> Optional[dict]:
-        data["updated_at"] = datetime.now(timezone.utc)
-        await self.col.update_one({"_id": _oid(tid)}, {"$set": data})
-        return await self.find_by_id(tid)
-
-    async def delete(self, tid: str) -> bool:
-        result = await self.col.delete_one({"_id": _oid(tid)})
-        return result.deleted_count == 1
-
-
-# ─────────────────────────────────────────────
-# Speaking Parts
-# ─────────────────────────────────────────────
-
-class SpeakingPartRepository:
-    def __init__(self, db: AsyncIOMotorDatabase):
-        self.col = db["speaking_parts"]
-
-    async def create(self, data: dict) -> dict:
-        data["created_at"] = datetime.now(timezone.utc)
-        result = await self.col.insert_one(data)
-        data["_id"] = result.inserted_id
-        return _serialize(data)
-
-    async def find_by_id(self, pid: str) -> Optional[dict]:
-        doc = await self.col.find_one({"_id": _oid(pid)})
-        return _serialize(doc) if doc else None
-
-    async def find_many(self, ids: List[str]) -> List[dict]:
-        oids = [_oid(i) for i in ids]
-        cursor = self.col.find({"_id": {"$in": oids}})
-        return [_serialize(d) async for d in cursor]
-
-    async def find_all(self, skip: int = 0, limit: int = 20) -> List[dict]:
-        cursor = self.col.find({}).sort("created_at", -1).skip(skip).limit(limit)
-        return [_serialize(d) async for d in cursor]
-
-    async def count(self) -> int:
-        return await self.col.count_documents({})
-
-    async def update(self, pid: str, data: dict) -> Optional[dict]:
-        data["updated_at"] = datetime.utcnow()
-        await self.col.update_one({"_id": _oid(pid)}, {"$set": data})
-        return await self.find_by_id(pid)
-
-    async def delete(self, pid: str) -> bool:
-        result = await self.col.delete_one({"_id": _oid(pid)})
-        return result.deleted_count == 1
-
 
 # ─────────────────────────────────────────────
 # Tests (exam papers)
@@ -269,6 +110,111 @@ class TestRepository:
     async def delete(self, tid: str) -> bool:
         result = await self.col.delete_one({"_id": _oid(tid)})
         return result.deleted_count == 1
+
+    # ── Section/part builder helpers ──────────────────────────
+
+    # Maps module name → (doc_field, array_field, number_key)
+    _MODULE_MAP = {
+        "listening": ("listening", "sections", "section_number"),
+        "reading":   ("reading",   "sections", "section_number"),
+        "writing":   ("writing",   "tasks",    "task_number"),
+        "speaking":  ("speaking",  "parts",    "part_number"),
+    }
+
+    # Maps SectionPart value → (module, number)
+    _SECTION_PART_MAP = {
+        "listening_section_1": ("listening", 1),
+        "listening_section_2": ("listening", 2),
+        "listening_section_3": ("listening", 3),
+        "listening_section_4": ("listening", 4),
+        "reading_passage_1":   ("reading",   1),
+        "reading_passage_2":   ("reading",   2),
+        "reading_passage_3":   ("reading",   3),
+        "writing_task_1":      ("writing",   1),
+        "writing_task_2":      ("writing",   2),
+        "speaking_part_1":     ("speaking",  1),
+        "speaking_part_2":     ("speaking",  2),
+        "speaking_part_3":     ("speaking",  3),
+    }
+
+    async def add_section(self, tid: str, module: str, section_data: dict) -> Optional[dict]:
+        """Push a new section/part/task into the appropriate module array."""
+        doc_field, array_field, _ = self._MODULE_MAP[module]
+        await self.col.update_one(
+            {"_id": _oid(tid)},
+            {
+                "$push": {f"{doc_field}.{array_field}": section_data},
+                "$set": {"updated_at": datetime.now(timezone.utc)},
+            },
+        )
+        return await self.find_by_id(tid)
+
+    async def update_section(self, tid: str, module: str, number: int, update_fields: dict) -> Optional[dict]:
+        """Update fields on a specific section/part/task by its number."""
+        doc_field, array_field, number_key = self._MODULE_MAP[module]
+        set_payload = {f"{doc_field}.{array_field}.$[elem].{k}": v for k, v in update_fields.items()}
+        set_payload["updated_at"] = datetime.now(timezone.utc)
+        await self.col.update_one(
+            {"_id": _oid(tid)},
+            {"$set": set_payload},
+            array_filters=[{f"elem.{number_key}": number}],
+        )
+        return await self.find_by_id(tid)
+
+    async def remove_section(self, tid: str, module: str, number: int) -> Optional[dict]:
+        """Pull a section/part/task from the module array.
+        If the array becomes empty after removal, unset the whole module field
+        so TestOut validation (min_length=1 on sections/tasks/parts) doesn't fail."""
+        doc_field, array_field, number_key = self._MODULE_MAP[module]
+        await self.col.update_one(
+            {"_id": _oid(tid)},
+            {
+                "$pull": {f"{doc_field}.{array_field}": {number_key: number}},
+                "$set": {"updated_at": datetime.now(timezone.utc)},
+            },
+        )
+        # If the module array is now empty, remove the whole module field
+        doc = await self.find_by_id(tid)
+        if doc:
+            module_data = doc.get(doc_field)
+            if isinstance(module_data, dict) and not module_data.get(array_field):
+                await self.col.update_one(
+                    {"_id": _oid(tid)},
+                    {"$unset": {doc_field: ""}, "$set": {"updated_at": datetime.now(timezone.utc)}},
+                )
+                return await self.find_by_id(tid)
+        return doc
+
+    async def add_question_to_section(self, tid: str, section_part: str, question_id: str) -> Optional[dict]:
+        """Push a question_id into the matching section's question_ids list."""
+        module, number = self._SECTION_PART_MAP[section_part]
+        doc_field, array_field, number_key = self._MODULE_MAP[module]
+        # writing tasks don't have question_ids
+        if module == "writing":
+            raise ValueError("Writing tasks do not have question_ids")
+        await self.col.update_one(
+            {"_id": _oid(tid), f"{doc_field}.{array_field}.{number_key}": number},
+            {
+                "$addToSet": {f"{doc_field}.{array_field}.$.question_ids": question_id},
+                "$set": {"updated_at": datetime.now(timezone.utc)},
+            },
+        )
+        return await self.find_by_id(tid)
+
+    async def remove_question_from_section(self, tid: str, section_part: str, question_id: str) -> Optional[dict]:
+        """Pull a question_id from the matching section's question_ids list."""
+        module, number = self._SECTION_PART_MAP[section_part]
+        doc_field, array_field, number_key = self._MODULE_MAP[module]
+        if module == "writing":
+            raise ValueError("Writing tasks do not have question_ids")
+        await self.col.update_one(
+            {"_id": _oid(tid), f"{doc_field}.{array_field}.{number_key}": number},
+            {
+                "$pull": {f"{doc_field}.{array_field}.$.question_ids": question_id},
+                "$set": {"updated_at": datetime.now(timezone.utc)},
+            },
+        )
+        return await self.find_by_id(tid)
 
 
 # ─────────────────────────────────────────────

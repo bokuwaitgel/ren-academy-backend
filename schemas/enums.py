@@ -101,6 +101,17 @@ class TestStatus(str, Enum):
     GRADED = "graded"
 
 
+class SessionMode(str, Enum):
+    PRACTICE = "practice"
+    FULL_TEST = "full_test"
+
+
+class SectionStatus(str, Enum):
+    NOT_STARTED = "not_started"
+    IN_PROGRESS = "in_progress"
+    COMPLETED = "completed"
+
+
 class BandScore(float, Enum):
     BAND_0 = 0.0
     BAND_1 = 1.0
