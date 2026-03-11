@@ -622,6 +622,111 @@ async def session_result(data: dict):
     return await _ielts_service().get_session_result(data["session_id"], user_id=user.id)
 
 
+@register(
+    name="sessions/grade",
+    method="POST",
+    required_keys=["session_id", "section", "band_score"],
+    optional_keys={"details": None},
+    summary="Grade writing/speaking section",
+    description=(
+        "Admin or examiner manually sets the band score for a writing or speaking section. "
+        "section must be 'writing' or 'speaking'. band_score must be 0–9 in 0.5 increments."
+    ),
+    tags=["Sessions"],
+)
+async def session_grade(data: dict):
+    await _require_admin_or_examiner(data)
+    return await _ielts_service().grade_writing_speaking(
+        session_id=data["session_id"],
+        section=data["section"],
+        band_score=float(data["band_score"]),
+        details=data.get("details"),
+    )
+
+
+@register(
+    name="sessions/writing/ai-grade",
+    method="POST",
+    required_keys=["session_id"],
+    summary="AI-grade writing section",
+    description=(
+        "Calls the AI writing evaluator on the session's stored writing answers "
+        "and saves the resulting band score back to the session. "
+        "Returns the full AI evaluation result plus the updated session."
+    ),
+    tags=["Sessions"],
+)
+async def session_writing_ai_grade(data: dict):
+    from src.agent.writing_agent import get_writing_agent
+
+    user = await _require_auth(data)
+    svc = _ielts_service()
+
+    session = await svc.get_session(data["session_id"], user_id=user.id if user.role == "candidate" else None)
+    session_dict = session.model_dump() if hasattr(session, "model_dump") else dict(session)
+
+    writing_answers: dict = (session_dict.get("answers") or {}).get("writing", {})
+    if not writing_answers:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No writing answers found in this session",
+        )
+
+    # Fetch test to get task descriptions
+    test = await svc.test_repo.find_by_id(session_dict["test_id"])
+    tasks_meta = {}
+    if test:
+        for task in (test.get("writing") or {}).get("tasks", []):
+            tasks_meta[f"task_{task['task_number']}"] = task.get("description", "")
+
+    agent = get_writing_agent()
+    evaluations = {}
+    band_scores = []
+
+    for answer_key, essay_text in writing_answers.items():
+        if not essay_text or not str(essay_text).strip():
+            continue
+        task_num = answer_key.replace("task_", "")
+        task_type = f"Task {task_num}" if task_num.isdigit() else ""
+        prompt = tasks_meta.get(answer_key, "")
+        try:
+            result = await agent.analyze(
+                content=str(essay_text),
+                prompt=prompt,
+                task_type=task_type,
+            )
+            evaluations[answer_key] = result.model_dump()
+            band_scores.append(result.overall_score)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"AI evaluation failed for {answer_key}: {exc}",
+            )
+
+    if not band_scores:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No valid writing answers to evaluate",
+        )
+
+    # Average band scores across tasks, round to nearest 0.5
+    avg_band = sum(band_scores) / len(band_scores)
+    final_band = round(avg_band * 2) / 2
+
+    updated_session = await svc.grade_writing_speaking(
+        session_id=data["session_id"],
+        section="writing",
+        band_score=final_band,
+        details={"ai_evaluations": evaluations},
+    )
+
+    return {
+        "session": updated_session,
+        "writing_band": final_band,
+        "evaluations": evaluations,
+    }
+
+
 # ── Utility ───────────────────────────────────
 
 def _clean_meta(data: dict):
