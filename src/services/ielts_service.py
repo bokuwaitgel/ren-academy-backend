@@ -551,7 +551,7 @@ class IeltsService:
             current_section = session_sections[0]["section"] if session_sections else None
         else:
             # PRACTICE — single section only
-            time_limit_secs = IELTS_SECTION_TIME_SECONDS.get(section)
+            time_limit_secs = IELTS_SECTION_TIME_SECONDS.get(section) if section else None
             session_sections = [{
                 "section": section,
                 "order_index": 0,
@@ -1125,6 +1125,8 @@ class IeltsService:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="module must be listening, reading, writing, or speaking")
 
         doc = await self.test_repo.add_section(test_id, module, section_data)
+        if not doc:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to add section")
         return TestOut(**doc)
 
     async def update_test_section(self, test_id: str, module: str, number: int, update_fields: dict) -> TestOut:
@@ -1132,6 +1134,8 @@ class IeltsService:
         if not test:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Test not found")
         doc = await self.test_repo.update_section(test_id, module, number, update_fields)
+        if not doc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Test not found after update")
         return TestOut(**doc)
 
     async def remove_section_from_test(self, test_id: str, module: str, number: int) -> TestOut:
@@ -1139,6 +1143,8 @@ class IeltsService:
         if not test:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Test not found")
         doc = await self.test_repo.remove_section(test_id, module, number)
+        if not doc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Test not found after removing section")
         return TestOut(**doc)
 
     async def add_question_to_test_section(self, test_id: str, section_part: str, question_id: str) -> TestOut:
@@ -1152,6 +1158,8 @@ class IeltsService:
             doc = await self.test_repo.add_question_to_section(test_id, section_part, question_id)
         except ValueError as e:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        if not doc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Test not found after adding question")
         return TestOut(**doc)
 
     async def remove_question_from_test_section(self, test_id: str, section_part: str, question_id: str) -> TestOut:
@@ -1162,7 +1170,11 @@ class IeltsService:
             doc = await self.test_repo.remove_question_from_section(test_id, section_part, question_id)
         except ValueError as e:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
-        return TestOut(**doc)
+        if not doc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Test not found after removing question")
+        from src.database.repositories.ielts_repository import _serialize
+        serialized_doc = _serialize(doc)
+        return TestOut(**serialized_doc)
 
     # ── Private helpers ───────────────────────
 

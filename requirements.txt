@@ -9,3 +9,5 @@ passlib
 python-dotenv
 python-multipart
 boto3
+pydantic-ai
+gunicorn
