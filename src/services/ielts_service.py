@@ -778,6 +778,73 @@ class IeltsService:
             "section": section_out,
         }
 
+    async def get_test_section(self, test_id: str, section: str, strip_answers: bool = True) -> dict:
+        """Return questions for a single section of a test without requiring a session."""
+        test = await self.test_repo.find_by_id(test_id)
+        if not test:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Test not found")
+
+        valid_sections = {s.value for s in SectionType}
+        if section not in valid_sections:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid section '{section}'. Must be one of: {', '.join(sorted(valid_sections))}",
+            )
+
+        section_out: dict = {"section": section}
+
+        if section == SectionType.LISTENING.value:
+            sub_sections = []
+            for sec in (test.get("listening") or {}).get("sections", []):
+                q_ids = sec.get("question_ids", [])
+                questions = await self.question_repo.find_many(q_ids)
+                sub_sections.append({
+                    "section_number": sec["section_number"],
+                    "audio_url": sec.get("audio_url"),
+                    "questions": [_strip_answers(q) if strip_answers else q for q in questions],
+                })
+            section_out["sub_sections"] = sub_sections
+
+        elif section == SectionType.READING.value:
+            sub_sections = []
+            for sec in (test.get("reading") or {}).get("sections", []):
+                q_ids = sec.get("question_ids", [])
+                questions = await self.question_repo.find_many(q_ids)
+                sub_sections.append({
+                    "section_number": sec["section_number"],
+                    "passage": sec.get("passage"),
+                    "questions": [_strip_answers(q) if strip_answers else q for q in questions],
+                })
+            section_out["sub_sections"] = sub_sections
+
+        elif section == SectionType.WRITING.value:
+            tasks = []
+            for task in (test.get("writing") or {}).get("tasks", []):
+                tasks.append({
+                    "task_number": task["task_number"],
+                    "answer_key": f"task_{task['task_number']}",
+                    "description": task.get("description"),
+                    "image_url": task.get("image_url"),
+                })
+            section_out["tasks"] = tasks
+
+        elif section == SectionType.SPEAKING.value:
+            parts = []
+            for part in (test.get("speaking") or {}).get("parts", []):
+                q_ids = part.get("question_ids", [])
+                questions = await self.question_repo.find_many(q_ids)
+                parts.append({
+                    "part_number": part["part_number"],
+                    "questions": [_strip_answers(q) if strip_answers else q for q in questions],
+                })
+            section_out["parts"] = parts
+
+        return {
+            "test_id": test_id,
+            "test_title": test.get("title"),
+            "section": section_out,
+        }
+
     async def submit_answers(self, user_id: str, session_id: str, sections: List[SectionAnswers]) -> TestSessionOut:
         session = await self._get_session_or_fail(session_id)
         if session["user_id"] != user_id:

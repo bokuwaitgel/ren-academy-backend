@@ -269,6 +269,31 @@ async def test_get(data: dict):
 
 
 @register(
+    name="tests/section",
+    method="GET",
+    required_keys=["section"],
+    optional_keys={"page": 1, "page_size": 20, "module_type": None, "section_part": None},
+    summary="Get all questions for a section",
+    description="Get all questions for a section (listening, reading, writing, or speaking) from the full question bank. Answers are stripped for candidates.",
+    tags=["Tests"],
+)
+async def test_get_section(data: dict):
+    user = await _require_auth(data)
+    svc = _ielts_service()
+    result = await svc.list_questions(
+        page=int(data.get("page", 1)),
+        page_size=min(int(data.get("page_size", 20)), 100),
+        section=data["section"],
+        section_part=data.get("section_part"),
+        module_type=data.get("module_type"),
+    )
+    if user.role == "candidate":
+        from src.services.ielts_service import _strip_answers
+        result.items = [_strip_answers(q) if isinstance(q, dict) else q for q in result.items]
+    return result
+
+
+@register(
     name="tests/update",
     method="PUT",
     required_keys=["test_id"],
