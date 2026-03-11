@@ -10,4 +10,5 @@ python-dotenv
 python-multipart
 boto3
 pydantic-ai
+httpx
 gunicorn

@@ -261,3 +261,52 @@ class TestSessionRepository:
         if doc is None:
             raise RuntimeError(f"Session {sid} not found after update")
         return doc
+
+
+# ─────────────────────────────────────────────
+# Speaking Practice Sessions
+# ─────────────────────────────────────────────
+
+class SpeakingPracticeRepository:
+    def __init__(self, db: AsyncIOMotorDatabase):
+        self.col = db["speaking_practice_sessions"]
+
+    async def create(self, data: dict) -> dict:
+        data["created_at"] = datetime.now(timezone.utc)
+        data.setdefault("answers", [])
+        data.setdefault("status", "in_progress")
+        result = await self.col.insert_one(data)
+        data["_id"] = result.inserted_id
+        return _serialize(data)
+
+    async def find_by_id(self, sid: str) -> Optional[dict]:
+        doc = await self.col.find_one({"_id": _oid(sid)})
+        return _serialize(doc) if doc else None
+
+    async def find_by_user(self, user_id: str, skip: int = 0, limit: int = 20) -> List[dict]:
+        cursor = self.col.find({"user_id": user_id}).sort("created_at", -1).skip(skip).limit(limit)
+        return [_serialize(d) async for d in cursor]
+
+    async def push_answer(self, sid: str, answer: dict) -> Optional[dict]:
+        """Push or replace an answer by index."""
+        answer["submitted_at"] = datetime.now(timezone.utc).isoformat()
+        # Remove existing answer at same index, then push the new one
+        await self.col.update_one(
+            {"_id": _oid(sid)},
+            {
+                "$pull": {"answers": {"index": answer["index"]}},
+                "$set": {"updated_at": datetime.now(timezone.utc)},
+            },
+        )
+        await self.col.update_one(
+            {"_id": _oid(sid)},
+            {"$push": {"answers": answer}},
+        )
+        return await self.find_by_id(sid)
+
+    async def complete(self, sid: str) -> Optional[dict]:
+        await self.col.update_one(
+            {"_id": _oid(sid)},
+            {"$set": {"status": "completed", "updated_at": datetime.now(timezone.utc)}},
+        )
+        return await self.find_by_id(sid)

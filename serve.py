@@ -14,12 +14,14 @@ import uvicorn
 
 from src.api.api_routes import ENDPOINTS
 from src.api import manager as _endpoints
+from src.agent.speaking_agent import get_speaking_agent
 from src.services.auth_service import AuthService
 from src.services.s3_service import S3StorageService
 from src.database.mongodb import MongoDB
 from src.database.repositories.user_repository import UserRepository
 from src.database.repositories.ielts_repository import (
     QuestionRepository,
+    SpeakingPracticeRepository,
     TestRepository,
     TestSessionRepository,
 )
@@ -344,7 +346,7 @@ async def upload_speaking_response_file(
     resolved_ct = content_type or file.content_type or "audio/webm"
     file_name = file.filename or f"{question_id}.webm"
 
-    url_data = S3StorageService()._upload_bytes(
+    url_data = S3StorageService().upload_bytes(
         module_type="responses",
         test_id=str(session_id),
         section="speaking",
@@ -355,6 +357,156 @@ async def upload_speaking_response_file(
         sub_path=str(question_id),
     )
     return {"audio_url": url_data["url"], "question_id": question_id}
+
+
+@app.post(
+    "/api/speaking/upload/file",
+    tags=["Speaking"],
+    summary="Upload speaking audio file (multipart)",
+    description="Upload raw audio bytes for a single practice question. Returns audio_url. No AI evaluation.",
+)
+async def speaking_upload_file(
+    session_id: str = Form(...),
+    index: int = Form(...),
+    file: UploadFile = File(...),
+    content_type: str = Form(default="audio/webm"),
+    authorization: str | None = Header(default=None, alias="Authorization"),
+):
+    db = MongoDB.get_db()
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="Missing token")
+    user = await AuthService(UserRepository(db)).get_current_user(authorization.split(" ", 1)[1].strip())
+
+    session = await SpeakingPracticeRepository(db).find_by_id(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Practice session not found")
+    if session["user_id"] != user.id:
+        raise HTTPException(status_code=403, detail="Not your session")
+    if index < 0 or index >= session["total"]:
+        raise HTTPException(status_code=400, detail=f"Index {index} out of range (0–{session['total'] - 1})")
+
+    file_bytes = await file.read()
+    if len(file_bytes) < 1000:
+        raise HTTPException(status_code=400, detail="Audio file is too small or empty")
+
+    resolved_ct = content_type or file.content_type or "audio/webm"
+    ext = resolved_ct.split("/")[-1].split(";")[0].strip() or "webm"
+
+    q_doc = await QuestionRepository(db).find_by_id(session["question_id"])
+    questions: list = (q_doc.get("speaking_questions") or []) if q_doc else []
+    question_text: str = questions[index]["question"] if index < len(questions) else ""
+
+    s3_result = S3StorageService().upload_bytes(
+        module_type="practice",
+        test_id=session_id,
+        section="speaking",
+        file_name=f"q{index}.{ext}",
+        file_bytes=file_bytes,
+        content_type=resolved_ct,
+        base_prefix=f"sessions/{user.id}",
+        sub_path=str(index),
+    )
+    return {
+        "audio_url": s3_result["url"],
+        "session_id": session_id,
+        "index": index,
+        "question": question_text,
+        "part": session["part"],
+        "total": session["total"],
+    }
+
+
+@app.post(
+    "/api/speaking/submit/file",
+    tags=["Speaking"],
+    summary="Submit speaking audio file (multipart) + evaluate",
+    description="Upload raw audio bytes for a single practice question, evaluate with AI, and save result. One-step multipart version of speaking/submit.",
+)
+async def speaking_submit_file(
+    session_id: str = Form(...),
+    index: int = Form(...),
+    file: UploadFile = File(...),
+    content_type: str = Form(default="audio/webm"),
+    authorization: str | None = Header(default=None, alias="Authorization"),
+):
+    db = MongoDB.get_db()
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="Missing token")
+    user = await AuthService(UserRepository(db)).get_current_user(authorization.split(" ", 1)[1].strip())
+
+    practice_repo = SpeakingPracticeRepository(db)
+    session = await practice_repo.find_by_id(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Practice session not found")
+    if session["user_id"] != user.id:
+        raise HTTPException(status_code=403, detail="Not your session")
+    if session["status"] == "completed":
+        raise HTTPException(status_code=400, detail="Session is already completed")
+
+    total = session["total"]
+    if index < 0 or index >= total:
+        raise HTTPException(status_code=400, detail=f"Index {index} out of range (0–{total - 1})")
+
+    file_bytes = await file.read()
+    if len(file_bytes) < 1000:
+        raise HTTPException(status_code=400, detail="Audio file is too small or empty")
+
+    resolved_ct = content_type or file.content_type or "audio/webm"
+    ext = resolved_ct.split("/")[-1].split(";")[0].strip() or "webm"
+
+    # Upload to S3
+    s3_result = S3StorageService().upload_bytes(
+        module_type="practice",
+        test_id=session_id,
+        section="speaking",
+        file_name=f"q{index}.{ext}",
+        file_bytes=file_bytes,
+        content_type=resolved_ct,
+        base_prefix=f"sessions/{user.id}",
+        sub_path=str(index),
+    )
+    audio_url = s3_result["url"]
+
+    # Fetch question text
+    q_doc = await QuestionRepository(db).find_by_id(session["question_id"])
+    questions: list = (q_doc.get("speaking_questions") or []) if q_doc else []
+    question_text: str = questions[index]["question"] if index < len(questions) else ""
+
+    # Evaluate with AI (reuse file_bytes — no re-fetch)
+    try:
+        result = await get_speaking_agent().analyze(
+            content=file_bytes,
+            media_type=resolved_ct,
+            question=question_text,
+            part=session["part"],
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"AI evaluation failed: {exc}")
+
+    evaluation = result.model_dump()
+
+    updated = await practice_repo.push_answer(session_id, {
+        "index": index,
+        "question": question_text,
+        "audio_url": audio_url,
+        "evaluation": evaluation,
+    })
+
+    answered_indices = {a["index"] for a in (updated.get("answers") or [])}
+    if len(answered_indices) >= total:
+        updated = await practice_repo.complete(session_id)
+
+    return {
+        "session_id": session_id,
+        "index": index,
+        "question": question_text,
+        "part": session["part"],
+        "audio_url": audio_url,
+        "status": updated["status"],
+        "answered": len(answered_indices),
+        "total": total,
+        "evaluation": evaluation,
+    }
 
 
 @app.get("/")

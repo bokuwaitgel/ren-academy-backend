@@ -164,6 +164,7 @@ class QuestionBase(BaseModel):
     cue_card:          Optional[CueCard]             = None
     speaking_questions: Optional[List[SpeakingQuestion]] = None
 
+class QuestionCreate(QuestionBase):
     @model_validator(mode="after")
     def check_type_data_consistency(self):
         t = self.type
@@ -207,13 +208,9 @@ class QuestionBase(BaseModel):
             raise ValueError(f"{t} requires 'writing_prompt'")
         if t == SpeakingQuestionType.CUE_CARD and not self.cue_card:
             raise ValueError("speaking_cue_card requires 'cue_card'")
-        if t in {SpeakingQuestionType.INTERVIEW, SpeakingQuestionType.  DISCUSSION} and not self.speaking_questions:
+        if t in {SpeakingQuestionType.INTERVIEW, SpeakingQuestionType.DISCUSSION} and not self.speaking_questions:
             raise ValueError(f"{t} requires 'speaking_questions'")
         return self
-
-
-class QuestionCreate(QuestionBase):
-    pass
 
 class QuestionUpdate(BaseModel):
     title:             Optional[str]            = None

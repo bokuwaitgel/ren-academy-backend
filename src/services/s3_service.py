@@ -104,7 +104,7 @@ class S3StorageService:
             "created_keys": created_keys,
         }
 
-    def _upload_bytes(
+    def upload_bytes(
         self,
         module_type: str,
         test_id: str,
@@ -160,7 +160,7 @@ class S3StorageService:
         sub_path: str | None = None,
     ) -> dict:
         file_bytes = self._decode_base64(file_content_base64)
-        return self._upload_bytes(
+        return self.upload_bytes(
             module_type=module_type,
             test_id=test_id,
             section=section,
