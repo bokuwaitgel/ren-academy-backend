@@ -2,7 +2,7 @@ module.exports = {
   apps: [
     {
       name: "ren-academy-api",
-      script: ".venv/Scripts/gunicorn",   // Windows venv path; use .venv/bin/gunicorn on Linux
+      script: ".venv/bin/gunicorn",
       args: "serve:app --worker-class uvicorn.workers.UvicornWorker --workers 4 --bind 0.0.0.0:8000 --timeout 120",
       cwd: __dirname,
       interpreter: "none",
