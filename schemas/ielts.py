@@ -388,6 +388,25 @@ class TestOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class TestSummary(BaseModel):
+    id:             str
+    title:          str
+    description:    Optional[str] = None
+    test_type:      TestType
+    module_type:    ModuleType
+    is_published:   bool
+    tags:           List[str] = []
+    question_count: int = 0
+    has_listening:  bool = False
+    has_reading:    bool = False
+    has_writing:    bool = False
+    has_speaking:   bool = False
+    created_at:     datetime
+    updated_at:     Optional[datetime] = None
+
+    model_config = {"from_attributes": True}
+
+
 # ─────────────────────────────────────────────
 # Test builder schemas (section/part management)
 # ─────────────────────────────────────────────

@@ -137,6 +137,30 @@ async def upload_reading_image(data: dict):
 
 
 @register(
+    name="storage/session/upload-speaking-response",
+    method="POST",
+    required_keys=["session_id", "question_id", "file_name", "file_content_base64"],
+    optional_keys={"content_type": "audio/webm"},
+    summary="Upload Speaking Response Audio",
+    description="Upload a candidate's spoken response audio for a speaking question. Returns the S3 URL to submit as the answer.",
+    tags=["Storage"],
+)
+async def upload_speaking_response(data: dict):
+    user = await _current_user(data)
+    url_data = S3StorageService().upload_question_file(
+        module_type="responses",
+        test_id=str(data["session_id"]),
+        section="speaking",
+        file_name=str(data["file_name"]),
+        file_content_base64=str(data["file_content_base64"]),
+        content_type=str(data.get("content_type", "audio/webm")),
+        base_prefix=f"sessions/{user.id}",
+        sub_path=str(data["question_id"]),
+    )
+    return {"audio_url": url_data["url"], "question_id": data["question_id"]}
+
+
+@register(
     name="storage/admin/s3/upload-speaking-audio",
     method="POST",
     required_keys=["module_type", "test_id", "file_name", "file_content_base64"],

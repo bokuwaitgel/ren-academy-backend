@@ -104,21 +104,19 @@ class S3StorageService:
             "created_keys": created_keys,
         }
 
-    def upload_question_file(
+    def _upload_bytes(
         self,
         module_type: str,
         test_id: str,
         section: str,
         file_name: str,
-        file_content_base64: str,
+        file_bytes: bytes,
         content_type: str | None = None,
         base_prefix: str = "questions",
         sub_path: str | None = None,
     ) -> dict:
         if not file_name:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="file_name is required")
-
-        file_bytes = self._decode_base64(file_content_base64)
         if len(file_bytes) == 0:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File content is empty")
 
@@ -130,11 +128,7 @@ class S3StorageService:
         timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
         key = f"{root_prefix}/{section_name}/{sub_dir}/{timestamp}-{safe_name}"
 
-        put_args = {
-            "Bucket": self.bucket,
-            "Key": key,
-            "Body": file_bytes,
-        }
+        put_args: dict = {"Bucket": self.bucket, "Key": key, "Body": file_bytes}
         if content_type:
             put_args["ContentType"] = content_type
 
@@ -153,3 +147,26 @@ class S3StorageService:
             "size": len(file_bytes),
             "content_type": content_type,
         }
+
+    def upload_question_file(
+        self,
+        module_type: str,
+        test_id: str,
+        section: str,
+        file_name: str,
+        file_content_base64: str,
+        content_type: str | None = None,
+        base_prefix: str = "questions",
+        sub_path: str | None = None,
+    ) -> dict:
+        file_bytes = self._decode_base64(file_content_base64)
+        return self._upload_bytes(
+            module_type=module_type,
+            test_id=test_id,
+            section=section,
+            file_name=file_name,
+            file_bytes=file_bytes,
+            content_type=content_type,
+            base_prefix=base_prefix,
+            sub_path=sub_path,
+        )

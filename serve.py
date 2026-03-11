@@ -2,7 +2,7 @@
 from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, Header, Request
+from fastapi import FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 from typing import Any, Dict, List, cast
@@ -14,6 +14,8 @@ import uvicorn
 
 from src.api.api_routes import ENDPOINTS
 from src.api import manager as _endpoints
+from src.services.auth_service import AuthService
+from src.services.s3_service import S3StorageService
 from src.database.mongodb import MongoDB
 from src.database.repositories.user_repository import UserRepository
 from src.database.repositories.ielts_repository import (
@@ -317,6 +319,44 @@ for name, info in ENDPOINTS.items():
         explicit_description=description,
         explicit_tags=tags,
     )
+
+@app.post(
+    "/api/storage/session/upload-speaking-response/file",
+    tags=["Storage"],
+    summary="Upload Speaking Response Audio (File Upload)",
+    description="Upload a candidate's spoken response as a multipart file. Returns the S3 URL to submit as the answer.",
+)
+async def upload_speaking_response_file(
+    session_id: str = Form(...),
+    question_id: str = Form(...),
+    file: UploadFile = File(...),
+    content_type: str = Form(default="audio/webm"),
+    authorization: str | None = Header(default=None, alias="Authorization"),
+):
+    db = MongoDB.get_db()
+    auth_svc = AuthService(UserRepository(db))
+
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="Missing token")
+    token = authorization.split(" ", 1)[1].strip()
+    user = await auth_svc.get_current_user(token)
+
+    file_bytes = await file.read()
+    resolved_ct = content_type or file.content_type or "audio/webm"
+    file_name = file.filename or f"{question_id}.webm"
+
+    url_data = S3StorageService()._upload_bytes(
+        module_type="responses",
+        test_id=str(session_id),
+        section="speaking",
+        file_name=file_name,
+        file_bytes=file_bytes,
+        content_type=resolved_ct,
+        base_prefix=f"sessions/{user.id}",
+        sub_path=str(question_id),
+    )
+    return {"audio_url": url_data["url"], "question_id": question_id}
+
 
 @app.get("/")
 async def root():

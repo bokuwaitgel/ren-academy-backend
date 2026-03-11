@@ -272,25 +272,37 @@ async def test_get(data: dict):
     name="tests/section",
     method="GET",
     required_keys=["section"],
-    optional_keys={"page": 1, "page_size": 20, "module_type": None, "section_part": None},
-    summary="Get all questions for a section",
-    description="Get all questions for a section (listening, reading, writing, or speaking) from the full question bank. Answers are stripped for candidates.",
+    summary="List tests that have a section",
+    description="Returns a minimal list (test_id, test_title, module_type) of all tests that contain the given section.",
     tags=["Tests"],
 )
 async def test_get_section(data: dict):
     user = await _require_auth(data)
-    svc = _ielts_service()
-    result = await svc.list_questions(
-        page=int(data.get("page", 1)),
-        page_size=min(int(data.get("page_size", 20)), 100),
+    return await _ielts_service().get_section_across_tests(
         section=data["section"],
-        section_part=data.get("section_part"),
-        module_type=data.get("module_type"),
+        strip_answers=user.role == "candidate",
+        published_only=user.role == "candidate",
     )
-    if user.role == "candidate":
-        from src.services.ielts_service import _strip_answers
-        result.items = [_strip_answers(q) if isinstance(q, dict) else q for q in result.items]
-    return result
+
+
+@register(
+    name="tests/section/detail",
+    method="GET",
+    required_keys=["test_id", "section"],
+    summary="Get full section content for a test",
+    description="Returns the full content (sub-sections/parts/questions) for a specific section of a specific test.",
+    tags=["Tests"],
+)
+async def test_get_section_detail(data: dict):
+    user = await _require_auth(data)
+    test = await _ielts_service().get_test(data["test_id"])
+    if user.role == "candidate" and not test.is_published:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Test not found")
+    return await _ielts_service().get_test_section_detail(
+        test_id=data["test_id"],
+        section=data["section"],
+        strip_answers=user.role == "candidate",
+    )
 
 
 @register(
