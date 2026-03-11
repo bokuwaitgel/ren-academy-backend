@@ -522,20 +522,6 @@ class IeltsService:
                     detail=f"Section '{section}' not found in this test",
                 )
 
-        # Check for existing in-progress session of same mode (+ section for practice)
-        in_progress_query: Dict[str, Any] = {
-            "user_id": user_id,
-            "test_id": test_id,
-            "mode": mode,
-            "status": TestStatus.IN_PROGRESS.value,
-        }
-        if mode == SessionMode.PRACTICE.value:
-            in_progress_query["practice_section"] = section
-        existing = await self.session_repo.col.find_one(in_progress_query)
-        if existing:
-            from src.database.repositories.ielts_repository import _serialize
-            return TestSessionOut(**_serialize(existing))
-
         # Build session_sections based on mode
         if mode == SessionMode.FULL_TEST.value:
             # All sections present in the test, ordered by IELTS standard order

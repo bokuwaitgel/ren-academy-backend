@@ -828,6 +828,125 @@ async def speaking_session_submit(data: dict) -> dict:
 
 
 # ═════════════════════════════════════════════
+#  SPEAKING SESSION — evaluate from stored answers
+# ═════════════════════════════════════════════
+
+@register(
+    name="speaking/session/evaluate",
+    method="POST",
+    required_keys=["session_id"],
+    optional_keys={"media_type": "audio/webm"},
+    summary="Evaluate stored speaking answers for a session",
+    description=(
+        "Reads the speaking answers already stored in the session (via sessions/section/submit) "
+        "and evaluates each audio URL with AI.\n\n"
+        "Expected answer format in session:\n"
+        "- Part 1 & 3: {\"part\": 1, \"responses\": [{\"question\": \"...\", \"audio_url\": \"...\"}]}\n"
+        "- Part 2: {\"part\": 2, \"audio_url\": \"...\"}\n\n"
+        "Saves evaluations back into the session answers and returns all results."
+    ),
+    tags=["Speaking"],
+)
+async def speaking_session_evaluate(data: dict) -> dict:
+    user = await _require_auth(data)
+
+    session_id: str = str(data["session_id"]).strip()
+    media_type: str = data.get("media_type", "audio/webm") or "audio/webm"
+
+    session = await _session_repo().find_by_id(session_id)
+    if not session:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Test session not found")
+    if session["user_id"] != user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not your session")
+
+    session_answers: dict = session.get("answers", {}) or {}
+    speaking_answers: dict = session_answers.get("speaking", {})
+
+    if not speaking_answers:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No speaking answers found in this session. Submit answers first via sessions/section/submit.",
+        )
+
+    agent = get_speaking_agent()
+    all_results: list = []
+
+    for question_id, answer in speaking_answers.items():
+        part_number = answer.get("part", 0)
+        part_label = f"Part {part_number}"
+
+        if part_number == 2:
+            # Single cue card audio
+            audio_url: str = str(answer.get("audio_url", "")).strip()
+            if not audio_url:
+                continue
+            audio_bytes = await _fetch_audio_bytes(audio_url)
+            try:
+                result = await agent.analyze(
+                    content=audio_bytes,
+                    media_type=media_type,
+                    question="",
+                    part=part_label,
+                )
+                evaluation = result.model_dump()
+            except Exception as exc:
+                evaluation = {"error": str(exc)}
+
+            answer["evaluation"] = evaluation
+            all_results.append({
+                "question_id": question_id,
+                "part_number": part_number,
+                "audio_url": audio_url,
+                "evaluation": evaluation,
+            })
+
+        else:
+            # Part 1 or Part 3 — multiple responses
+            responses: list = answer.get("responses", [])
+            evaluated_responses = []
+            for resp in responses:
+                audio_url = str(resp.get("audio_url", "")).strip()
+                question_text = resp.get("question", "")
+                if not audio_url:
+                    evaluated_responses.append(resp)
+                    continue
+                audio_bytes = await _fetch_audio_bytes(audio_url)
+                try:
+                    result = await agent.analyze(
+                        content=audio_bytes,
+                        media_type=media_type,
+                        question=question_text,
+                        part=part_label,
+                    )
+                    evaluation = result.model_dump()
+                except Exception as exc:
+                    evaluation = {"error": str(exc)}
+
+                evaluated_resp = {**resp, "evaluation": evaluation}
+                evaluated_responses.append(evaluated_resp)
+                all_results.append({
+                    "question_id": question_id,
+                    "part_number": part_number,
+                    "question": question_text,
+                    "audio_url": audio_url,
+                    "evaluation": evaluation,
+                })
+
+            answer["responses"] = evaluated_responses
+
+    # Save evaluations back to session
+    session_answers["speaking"] = speaking_answers
+    await _session_repo().update(session_id, {"answers": session_answers})
+
+    return {
+        "session_id": session_id,
+        "test_id": session["test_id"],
+        "total_evaluated": len(all_results),
+        "results": all_results,
+    }
+
+
+# ═════════════════════════════════════════════
 #  SPEAKING SESSION (full test) — submit via audio URLs
 # ═════════════════════════════════════════════
 
