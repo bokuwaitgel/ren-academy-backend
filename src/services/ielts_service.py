@@ -111,6 +111,92 @@ def _strip_answers(question: dict) -> dict:
     return safe
 
 
+def _calculate_speaking_score_from_answers(speaking_answers: dict) -> tuple[float | None, dict | None]:
+    """
+    Extract all AI evaluations stored in answers["speaking"] and compute band + details.
+    Returns (band_score, details_dict) or (None, None) if nothing evaluatable.
+    """
+    all_results = []
+    for qid, answer in (speaking_answers or {}).items():
+        part_number = answer.get("part", 0)
+        # Part 2: single evaluation at top level
+        if part_number == 2:
+            evaluation = answer.get("evaluation")
+            if evaluation and isinstance(evaluation, dict) and "error" not in evaluation:
+                all_results.append({
+                    "question_id": qid,
+                    "part_number": part_number,
+                    "audio_url": answer.get("audio_url", ""),
+                    "evaluation": evaluation,
+                })
+        else:
+            # Part 1 / Part 3: responses list
+            for resp in answer.get("responses", []):
+                evaluation = resp.get("evaluation")
+                if evaluation and isinstance(evaluation, dict) and "error" not in evaluation:
+                    all_results.append({
+                        "question_id": qid,
+                        "part_number": part_number,
+                        "question": resp.get("question", ""),
+                        "audio_url": resp.get("audio_url", ""),
+                        "evaluation": evaluation,
+                    })
+
+    if not all_results:
+        return None, None
+
+    def _round_half_local(v: float) -> float:
+        return round(v * 2) / 2
+
+    def _avg_rounded(vals: list) -> float | None:
+        clean = [x for x in vals if x is not None]
+        return _round_half_local(sum(clean) / len(clean)) if clean else None
+
+    valid_evals = [r["evaluation"] for r in all_results]
+    fluency = _avg_rounded([e.get("fluency_coherence") for e in valid_evals])
+    lexical = _avg_rounded([e.get("lexical_resource") for e in valid_evals])
+    grammar = _avg_rounded([e.get("grammar_accuracy") for e in valid_evals])
+    pronun  = _avg_rounded([e.get("pronunciation") for e in valid_evals])
+
+    criteria_vals = [v for v in [fluency, lexical, grammar, pronun] if v is not None]
+    if criteria_vals:
+        overall = _avg_rounded(criteria_vals)
+    else:
+        overall = _avg_rounded([e.get("overall_score") for e in valid_evals])
+
+    details = {
+        "band_score": overall,
+        "criteria": {
+            "fluency_coherence": fluency,
+            "lexical_resource": lexical,
+            "grammar_accuracy": grammar,
+            "pronunciation": pronun,
+        },
+        "answer_count": len(all_results),
+        "answer_details": all_results,
+    }
+    return overall, details
+
+
+def _extract_correct_answer(q: dict) -> Any:
+    """Extract the displayable correct answer from a question."""
+    q_type = q.get("type", "")
+    if q_type == QuestionType.MULTIPLE_CHOICE:
+        return q.get("correct_option")
+    if q_type == QuestionType.MULTIPLE_SELECT:
+        return q.get("correct_options")
+    # Item-based types: return {index: answer} mapping
+    for field in [
+        "tfng_items", "form_fields", "table_cells", "flow_steps",
+        "sentences", "summary_items", "short_items", "map_slots",
+        "matching_items", "heading_items",
+    ]:
+        items = q.get(field) or []
+        if items:
+            return {str(i): item.get("answer") for i, item in enumerate(items) if item.get("answer") is not None}
+    return None
+
+
 def _score_question(question: dict, user_answer: Any) -> tuple[int, int]:
     """
     Score a single question.
@@ -959,6 +1045,11 @@ class IeltsService:
         section_scores: List[SectionScore] = []
         band_by_section: Dict[str, float] = {}
 
+        # Preserve any already-graded scores (e.g. speaking AI evaluation)
+        existing_scores: Dict[str, Any] = {
+            s["section"]: s for s in (session.get("section_scores") or [])
+        }
+
         available_sections = _get_available_sections(test)
         if mode == SessionMode.PRACTICE.value:
             practice_section = session.get("practice_section")
@@ -971,23 +1062,48 @@ class IeltsService:
             section_answers = answers.get(section_type, {})
             total_earned = 0
             total_max = 0
+            answer_details: List[Dict[str, Any]] = []
 
             for q in questions:
                 user_ans = section_answers.get(q["id"])
                 earned, max_pts = _score_question(q, user_ans)
                 total_earned += earned
                 total_max += max_pts
+                if section_type in {SectionType.LISTENING.value, SectionType.READING.value}:
+                    answer_details.append({
+                        "question_id": q["id"],
+                        "title": q.get("title", ""),
+                        "type": q.get("type", ""),
+                        "user_answer": user_ans,
+                        "correct_answer": _extract_correct_answer(q),
+                        "earned": earned,
+                        "max": max_pts,
+                    })
 
             # Calculate band score
             if section_type == SectionType.LISTENING.value:
                 band = raw_to_band_listening(total_earned)
+                details: Optional[Dict[str, Any]] = {"answer_details": answer_details}
             elif section_type == SectionType.READING.value:
                 band = raw_to_band_reading(total_earned, is_academic=is_academic)
+                details = {"answer_details": answer_details}
             elif section_type in {SectionType.WRITING.value, SectionType.SPEAKING.value}:
-                # Writing & speaking: not auto-scored — placeholder band 0
-                band = 0.0
+                # Preserve existing score if already graded
+                existing = existing_scores.get(section_type)
+                existing_band = float(existing["band_score"]) if existing and existing.get("band_score") else 0.0
+                if existing_band > 0:
+                    band = existing_band
+                    details = existing.get("details") if existing else None
+                elif section_type == SectionType.SPEAKING.value:
+                    # Auto-calculate from stored evaluations in answers["speaking"]
+                    band, details = _calculate_speaking_score_from_answers(answers.get("speaking", {}))
+                    band = band or 0.0
+                else:
+                    band = 0.0
+                    details = None
             else:
                 band = 0.0
+                details = None
 
             band_by_section[section_type] = band
             section_scores.append(SectionScore(
@@ -995,6 +1111,7 @@ class IeltsService:
                 raw_score=total_earned,
                 max_score=total_max,
                 band_score=band,
+                details=details,
             ))
 
         # Overall band — only calculated for FULL_TEST with all 4 sections

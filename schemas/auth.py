@@ -3,7 +3,7 @@ from typing import Optional, Literal
 from datetime import datetime
 
 
-UserRole = Literal["candidate", "examiner", "admin"]
+UserRole = Literal["candidate", "examiner", "admin", "super_admin", "super-admin"]
 
 
 class UserCreate(BaseModel):

@@ -304,9 +304,9 @@ class SpeakingPracticeRepository:
         )
         return await self.find_by_id(sid)
 
-    async def complete(self, sid: str) -> Optional[dict]:
-        await self.col.update_one(
-            {"_id": _oid(sid)},
-            {"$set": {"status": "completed", "updated_at": datetime.now(timezone.utc)}},
-        )
+    async def complete(self, sid: str, extra: dict | None = None) -> Optional[dict]:
+        fields = {"status": "completed", "updated_at": datetime.now(timezone.utc)}
+        if extra:
+            fields.update(extra)
+        await self.col.update_one({"_id": _oid(sid)}, {"$set": fields})
         return await self.find_by_id(sid)

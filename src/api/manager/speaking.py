@@ -18,6 +18,53 @@ import base64 as _base64
 from src.services.s3_service import S3StorageService
 
 
+# ─────────────────────────────────────────────
+# Score calculation helper
+# ─────────────────────────────────────────────
+
+def _round_half(value: float) -> float:
+    """Round to nearest 0.5 (IELTS convention)."""
+    return round(value * 2) / 2
+
+
+def _calculate_speaking_section_score(all_results: list) -> dict | None:
+    """
+    Aggregate per-answer AI evaluations into an overall speaking section score.
+    Returns None if no valid evaluations exist.
+    """
+    valid_evals = [
+        r["evaluation"] for r in all_results
+        if isinstance(r.get("evaluation"), dict) and "error" not in r["evaluation"]
+    ]
+    if not valid_evals:
+        return None
+
+    def _avg(vals: list[float]) -> float | None:
+        return _round_half(sum(vals) / len(vals)) if vals else None
+
+    fluency_avg = _avg([e["fluency_coherence"] for e in valid_evals if "fluency_coherence" in e])
+    lexical_avg = _avg([e["lexical_resource"] for e in valid_evals if "lexical_resource" in e])
+    grammar_avg = _avg([e["grammar_accuracy"] for e in valid_evals if "grammar_accuracy" in e])
+    pronun_avg  = _avg([e["pronunciation"] for e in valid_evals if "pronunciation" in e])
+
+    criteria_vals = [v for v in [fluency_avg, lexical_avg, grammar_avg, pronun_avg] if v is not None]
+    overall = _avg(criteria_vals) if criteria_vals else _avg(
+        [e["overall_score"] for e in valid_evals if "overall_score" in e]
+    )
+
+    return {
+        "band_score": overall,
+        "criteria": {
+            "fluency_coherence": fluency_avg,
+            "lexical_resource": lexical_avg,
+            "grammar_accuracy": grammar_avg,
+            "pronunciation": pronun_avg,
+        },
+        "answer_count": len(valid_evals),
+        "answer_details": all_results,
+    }
+
+
 def _decode_base64(data: str) -> bytes:
     raw = data.strip()
     if "," in raw and "base64" in raw[:64].lower():
@@ -547,7 +594,15 @@ async def speaking_practice_submit(data: dict) -> dict:
 
     answered_indices = {a["index"] for a in (updated.get("answers") or [])}
     if len(answered_indices) >= total:
-        completed = await _practice_repo().complete(session_id)
+        all_answers = updated.get("answers") or []
+        practice_score = _calculate_speaking_section_score([
+            {"evaluation": a["evaluation"]} for a in all_answers if a.get("evaluation")
+        ])
+        extra: dict = {}
+        if practice_score and practice_score["band_score"] is not None:
+            extra["overall_score"] = practice_score["band_score"]
+            extra["criteria_scores"] = practice_score["criteria"]
+        completed = await _practice_repo().complete(session_id, extra or None)
         if completed is not None:
             updated = completed
 
@@ -812,17 +867,31 @@ async def speaking_session_submit(data: dict) -> dict:
             next_section = sec["section"]
             break
 
+    # Calculate speaking section score from all evaluations
+    speaking_score = _calculate_speaking_section_score(all_results)
+    section_scores = [s for s in (session.get("section_scores") or []) if s.get("section") != "speaking"]
+    if speaking_score and speaking_score["band_score"] is not None:
+        section_scores.append({
+            "section": "speaking",
+            "raw_score": speaking_score["answer_count"],
+            "max_score": len(all_results),
+            "band_score": speaking_score["band_score"],
+            "details": speaking_score,
+        })
+
     # Save to test session
     await _session_repo().update(session_id, {
         "answers": session_answers,
         "session_sections": session_sections,
         "current_section": next_section,
+        "section_scores": section_scores,
     })
 
     return {
         "session_id": session_id,
         "test_id": session["test_id"],
         "total_submitted": len(all_results),
+        "speaking_score": speaking_score,
         "results": all_results,
     }
 
@@ -934,14 +1003,39 @@ async def speaking_session_evaluate(data: dict) -> dict:
 
             answer["responses"] = evaluated_responses
 
-    # Save evaluations back to session
+    # Calculate overall speaking section score from all evaluations
+    speaking_score = _calculate_speaking_section_score(all_results)
+
+    # Build updated section_scores — replace any existing speaking entry
+    section_scores = [
+        s for s in (session.get("section_scores") or [])
+        if s.get("section") != "speaking"
+    ]
+    if speaking_score and speaking_score.get("band_score") is not None:
+        section_scores.append({
+            "section": "speaking",
+            "raw_score": speaking_score["answer_count"],
+            "max_score": len(all_results),
+            "band_score": speaking_score["band_score"],
+            "details": speaking_score,
+        })
+
+    # Persist updated answers and scores
     session_answers["speaking"] = speaking_answers
-    await _session_repo().update(session_id, {"answers": session_answers})
+    update: dict = {"answers": session_answers, "section_scores": section_scores}
+
+    # Recalculate overall band from all available section scores
+    bands = [s["band_score"] for s in section_scores if s.get("band_score") is not None]
+    if bands:
+        update["overall_band"] = _round_half(sum(bands) / len(bands))
+
+    await _session_repo().update(session_id, update)
 
     return {
         "session_id": session_id,
         "test_id": session["test_id"],
         "total_evaluated": len(all_results),
+        "speaking_score": speaking_score,
         "results": all_results,
     }
 
@@ -1134,16 +1228,30 @@ async def speaking_session_submit_url(data: dict) -> dict:
             next_section = sec["section"]
             break
 
+    # Calculate speaking section score from all evaluations
+    speaking_score = _calculate_speaking_section_score(all_results)
+    section_scores = [s for s in (session.get("section_scores") or []) if s.get("section") != "speaking"]
+    if speaking_score and speaking_score["band_score"] is not None:
+        section_scores.append({
+            "section": "speaking",
+            "raw_score": speaking_score["answer_count"],
+            "max_score": len(all_results),
+            "band_score": speaking_score["band_score"],
+            "details": speaking_score,
+        })
+
     # Save to test session
     await _session_repo().update(session_id, {
         "answers": session_answers,
         "session_sections": session_sections,
         "current_section": next_section,
+        "section_scores": section_scores,
     })
 
     return {
         "session_id": session_id,
         "test_id": session["test_id"],
         "total_submitted": len(all_results),
+        "speaking_score": speaking_score,
         "results": all_results,
     }

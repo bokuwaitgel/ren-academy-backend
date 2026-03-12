@@ -11,6 +11,7 @@ from src.api.api_routes import register
 from src.database.mongodb import MongoDB
 from src.database.repositories.ielts_repository import (
     QuestionRepository,
+    SpeakingPracticeRepository,
     TestRepository,
     TestSessionRepository,
 )
@@ -48,8 +49,17 @@ async def _require_admin(payload: dict):
     token = _extract_token(payload)
     ielts_svc, auth_svc, user_repo = _get_services()
     user = await auth_svc.get_current_user(token)
-    if user.role != "admin":
+    if user.role not in {"admin", "super_admin", "super-admin"}:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
+    return user, ielts_svc, auth_svc, user_repo
+
+
+async def _require_super_admin(payload: dict):
+    token = _extract_token(payload)
+    ielts_svc, auth_svc, user_repo = _get_services()
+    user = await auth_svc.get_current_user(token)
+    if user.role not in {"super_admin", "super-admin"}:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Super-admin access required")
     return user, ielts_svc, auth_svc, user_repo
 
 
@@ -57,7 +67,7 @@ async def _require_admin_or_examiner(payload: dict):
     token = _extract_token(payload)
     ielts_svc, auth_svc, user_repo = _get_services()
     user = await auth_svc.get_current_user(token)
-    if user.role not in {"admin", "examiner"}:
+    if user.role not in {"admin", "examiner", "super_admin", "super-admin"}:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin or examiner access required")
     return user, ielts_svc, auth_svc, user_repo
 
@@ -174,7 +184,7 @@ async def admin_users_update(data: dict):
 
     update_fields = {}
     if data.get("role") is not None:
-        valid_roles = {"candidate", "examiner", "admin"}
+        valid_roles = {"candidate", "examiner", "admin", "super_admin", "super-admin"}
         if data["role"] not in valid_roles:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -292,6 +302,24 @@ async def admin_sessions_grade(data: dict):
     )
 
 
+@register(
+    name="admin/sessions/delete",
+    method="DELETE",
+    required_keys=["session_id"],
+    summary="Delete session (super-admin)",
+    description="Permanently delete a test session. Only super-admins can perform this action.",
+    tags=["Admin"],
+)
+async def admin_sessions_delete(data: dict):
+    user, ielts_svc, auth_svc, user_repo = await _require_super_admin(data)
+    session_id = data["session_id"]
+    db = MongoDB.get_db()
+    result = await db["test_sessions"].delete_one({"_id": ObjectId(session_id)})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
+    return {"status": "deleted", "session_id": session_id}
+
+
 # ═════════════════════════════════════════════
 #  QUESTION & TEST ANALYTICS
 # ═════════════════════════════════════════════
@@ -391,3 +419,69 @@ async def admin_analytics_tests(data: dict):
         "band_distribution": band_distribution,
         "most_popular_tests": popular_tests,
     }
+
+
+# ═════════════════════════════════════════════
+#  SPEAKING PRACTICE SESSION MANAGEMENT
+# ═════════════════════════════════════════════
+
+@register(
+    name="admin/speaking-practice/list",
+    method="GET",
+    required_keys=[],
+    optional_keys={"page": 1, "page_size": 20, "user_id": None, "status": None},
+    summary="List speaking practice sessions (admin)",
+    description="List all speaking practice sessions with optional filters.",
+    tags=["Admin"],
+)
+async def admin_speaking_practice_list(data: dict):
+    user, ielts_svc, auth_svc, user_repo = await _require_admin_or_examiner(data)
+    db = MongoDB.get_db()
+    repo = SpeakingPracticeRepository(db)
+
+    page = max(1, int(data.get("page", 1)))
+    page_size = min(max(1, int(data.get("page_size", 20))), 100)
+    skip = (page - 1) * page_size
+
+    query: dict = {}
+    if data.get("user_id"):
+        query["user_id"] = data["user_id"]
+    if data.get("status"):
+        query["status"] = data["status"]
+
+    total = await repo.col.count_documents(query)
+    cursor = repo.col.find(query).sort("created_at", -1).skip(skip).limit(page_size)
+    items = []
+    async for doc in cursor:
+        doc["id"] = str(doc.pop("_id"))
+        items.append(doc)
+
+    return {
+        "items": items,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": max(1, (total + page_size - 1) // page_size),
+    }
+
+
+@register(
+    name="admin/speaking-practice/get",
+    method="GET",
+    required_keys=["session_id"],
+    summary="Get speaking practice session (admin)",
+    description="Get full speaking practice session including all answers and evaluations.",
+    tags=["Admin"],
+)
+async def admin_speaking_practice_get(data: dict):
+    user, ielts_svc, auth_svc, user_repo = await _require_admin_or_examiner(data)
+    db = MongoDB.get_db()
+    repo = SpeakingPracticeRepository(db)
+
+    session = await repo.find_by_id(data["session_id"])
+    if not session:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Practice session not found")
+
+    # Sort answers by index
+    session["answers"] = sorted(session.get("answers") or [], key=lambda a: a["index"])
+    return session
