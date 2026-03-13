@@ -758,11 +758,59 @@ class IeltsService:
                 next_section = sec["section"]
                 break
 
-        doc = await self.session_repo.update(session_id, {
+        update_data: Dict[str, Any] = {
             "answers": existing_answers,
             "session_sections": session_sections,
             "current_section": next_section,
-        })
+        }
+
+        # For listening/reading: score immediately on submit and save per-question details
+        if section in {SectionType.LISTENING.value, SectionType.READING.value}:
+            test = await self.test_repo.find_by_id(session["test_id"])
+            if test:
+                is_academic = test.get("module_type", "academic") == ModuleType.ACADEMIC.value
+                q_ids = _get_question_ids_for_section(test, section)
+                questions = await self.question_repo.find_many(q_ids) if q_ids else []
+                section_answers = existing_answers.get(section, {})
+
+                total_earned = 0
+                total_max = 0
+                answer_details: List[Dict[str, Any]] = []
+                for q in questions:
+                    user_ans = section_answers.get(q["id"])
+                    earned, max_pts = _score_question(q, user_ans)
+                    total_earned += earned
+                    total_max += max_pts
+                    answer_details.append({
+                        "question_id": q["id"],
+                        "title": q.get("title", ""),
+                        "type": q.get("type", ""),
+                        "user_answer": user_ans,
+                        "correct_answer": _extract_correct_answer(q),
+                        "is_correct": earned == max_pts and max_pts > 0,
+                        "earned": earned,
+                        "max": max_pts,
+                    })
+
+                if section == SectionType.LISTENING.value:
+                    band = raw_to_band_listening(total_earned)
+                else:
+                    band = raw_to_band_reading(total_earned, is_academic=is_academic)
+
+                section_score = {
+                    "section": section,
+                    "raw_score": total_earned,
+                    "max_score": total_max,
+                    "band_score": band,
+                    "details": {"answer_details": answer_details},
+                }
+
+                existing_scores: List[Dict[str, Any]] = session.get("section_scores") or []
+                existing_scores = [s for s in existing_scores if s.get("section") != section]
+                existing_scores.append(section_score)
+                update_data["section_scores"] = existing_scores
+
+        doc = await self.session_repo.update(session_id, update_data)
         return TestSessionOut(**doc)
 
     async def get_test_questions_for_session(self, user_id: str, session_id: str) -> dict:

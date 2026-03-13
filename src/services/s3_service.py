@@ -1,7 +1,7 @@
 import base64
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List
 from urllib.parse import quote
 
@@ -125,7 +125,7 @@ class S3StorageService:
         safe_name = self._safe_part(file_name)
 
         sub_dir = self._safe_part(sub_path).lower() if sub_path else "files"
-        timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
         key = f"{root_prefix}/{section_name}/{sub_dir}/{timestamp}-{safe_name}"
 
         put_args: dict = {"Bucket": self.bucket, "Key": key, "Body": file_bytes}
@@ -138,6 +138,54 @@ class S3StorageService:
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail=f"Failed to upload file to S3: {exc}",
+            )
+
+        return {
+            "bucket": self.bucket,
+            "key": key,
+            "url": self._object_url(key),
+            "size": len(file_bytes),
+            "content_type": content_type,
+        }
+
+    def upload_speaking_audio(
+        self,
+        mode: str,
+        session_id: str,
+        user_id: str,
+        question_id: str,
+        index: int,
+        file_bytes: bytes,
+        ext: str = "webm",
+        content_type: str | None = None,
+        test_id: str | None = None,
+    ) -> dict:
+        """Upload speaking audio with standardised path.
+
+        Test session: speaking/{mode}/{session_id}_{test_id}_{user_id}_{question_id}_{index}.{ext}
+        Practice:     speaking/practice/{session_id}_{user_id}_{question_id}_{index}.{ext}
+        """
+        safe = self._safe_part
+        safe_mode = safe(mode).lower()
+        safe_ext = safe(ext).lower() or "webm"
+
+        if test_id:
+            file_name = f"{safe(session_id)}_{safe(test_id)}_{safe(user_id)}_{safe(question_id)}_{index}.{safe_ext}"
+        else:
+            file_name = f"{safe(session_id)}_{safe(user_id)}_{safe(question_id)}_{index}.{safe_ext}"
+
+        key = f"speaking/{safe_mode}/{file_name}"
+
+        put_args: dict = {"Bucket": self.bucket, "Key": key, "Body": file_bytes}
+        if content_type:
+            put_args["ContentType"] = content_type
+
+        try:
+            self.client.put_object(**put_args)
+        except ClientError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Failed to upload speaking audio to S3: {exc}",
             )
 
         return {

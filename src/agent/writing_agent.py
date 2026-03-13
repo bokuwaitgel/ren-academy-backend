@@ -100,7 +100,7 @@ class GeminiWritingAgent(IeltsWritingAgent):
 
     def __init__(self) -> None:
         self._agent: Agent[None, WritingEvaluationResult] = Agent(
-            "google-gla:gemini-2.5-flash",
+            "google-gla:gemini-2.5-pro",
             output_type=WritingEvaluationResult,
             system_prompt=_SYSTEM_PROMPT,
         )

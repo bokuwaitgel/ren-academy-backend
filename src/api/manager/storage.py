@@ -5,9 +5,14 @@ from schemas.auth import UserResponse
 from schemas.storage import S3QuestionFileUploadRequest, S3StructureCreateRequest
 from src.api.api_routes import register
 from src.database.mongodb import MongoDB
+from src.database.repositories.ielts_repository import TestSessionRepository
 from src.database.repositories.user_repository import UserRepository
 from src.services.auth_service import AuthService
 from src.services.s3_service import S3StorageService
+
+
+def _session_repo() -> TestSessionRepository:
+    return TestSessionRepository(MongoDB.get_db())
 
 
 def _auth_service() -> AuthService:
@@ -139,25 +144,63 @@ async def upload_reading_image(data: dict):
 @register(
     name="storage/session/upload-speaking-response",
     method="POST",
-    required_keys=["session_id", "question_id", "file_name", "file_content_base64"],
-    optional_keys={"content_type": "audio/webm"},
+    required_keys=["session_id", "question_id", "file_name", "file_content_base64", "part"],
+    optional_keys={"content_type": "audio/webm", "question": ""},
     summary="Upload Speaking Response Audio",
-    description="Upload a candidate's spoken response audio for a speaking question. Returns the S3 URL to submit as the answer.",
+    description=(
+        "Upload a candidate's spoken response audio for a speaking question and save the URL into the session.\n\n"
+        "part: 1, 2, or 3\n"
+        "question: question text (used for Part 1 & 3, ignored for Part 2)"
+    ),
     tags=["Storage"],
 )
 async def upload_speaking_response(data: dict):
     user = await _current_user(data)
+
+    session_id = str(data["session_id"])
+    question_id = str(data["question_id"])
+    question_text = str(data.get("question", "") or "")
+
+    try:
+        part = int(data["part"])
+        if part not in (1, 2, 3):
+            raise ValueError
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="part must be 1, 2, or 3")
+
+    session = await _session_repo().find_by_id(session_id)
+    if not session:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
+    if session["user_id"] != user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not your session")
+
     url_data = S3StorageService().upload_question_file(
         module_type="responses",
-        test_id=str(data["session_id"]),
+        test_id=session_id,
         section="speaking",
         file_name=str(data["file_name"]),
         file_content_base64=str(data["file_content_base64"]),
         content_type=str(data.get("content_type", "audio/webm")),
         base_prefix=f"sessions/{user.id}",
-        sub_path=str(data["question_id"]),
+        sub_path=question_id,
     )
-    return {"audio_url": url_data["url"], "question_id": data["question_id"]}
+    audio_url: str = url_data["url"]
+
+    session_answers: dict = dict(session.get("answers") or {})
+    speaking_answers: dict = dict(session_answers.get("speaking") or {})
+
+    if part == 2:
+        speaking_answers[question_id] = {"part": part, "audio_url": audio_url}
+    else:
+        existing = speaking_answers.get(question_id, {"part": part, "responses": []})
+        responses: list = list(existing.get("responses", []))
+        responses.append({"question": question_text, "audio_url": audio_url})
+        speaking_answers[question_id] = {"part": part, "responses": responses}
+
+    session_answers["speaking"] = speaking_answers
+    await _session_repo().update(session_id, {"answers": session_answers})
+
+    return {"audio_url": audio_url, "question_id": question_id, "part": part}
 
 
 @register(

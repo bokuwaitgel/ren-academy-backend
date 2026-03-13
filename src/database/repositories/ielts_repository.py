@@ -288,13 +288,15 @@ class SpeakingPracticeRepository:
         return [_serialize(d) async for d in cursor]
 
     async def push_answer(self, sid: str, answer: dict) -> Optional[dict]:
-        """Push or replace an answer by index."""
+        """Push or replace an answer by question_id + index."""
         answer["submitted_at"] = datetime.now(timezone.utc).isoformat()
-        # Remove existing answer at same index, then push the new one
+        pull_filter: dict = {"index": answer["index"]}
+        if answer.get("question_id"):
+            pull_filter["question_id"] = answer["question_id"]
         await self.col.update_one(
             {"_id": _oid(sid)},
             {
-                "$pull": {"answers": {"index": answer["index"]}},
+                "$pull": {"answers": pull_filter},
                 "$set": {"updated_at": datetime.now(timezone.utc)},
             },
         )
