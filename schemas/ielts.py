@@ -372,7 +372,7 @@ class TestOut(BaseModel):
     description:  Optional[str] = None
     test_type:    TestType
     module_type:  ModuleType
-    is_published: bool
+    is_published: Optional[bool] = False
     tags:         List[str] = []
     question_count: int = 0
     listening:    Optional[ListeningModule] = None
@@ -383,6 +383,11 @@ class TestOut(BaseModel):
     updated_at:   Optional[datetime] = None
 
     model_config = {"from_attributes": True}
+
+    @field_validator("is_published", mode="before")
+    @classmethod
+    def coerce_is_published(cls, v):
+        return bool(v) if v is not None else False
 
 
 class TestSummary(BaseModel):
