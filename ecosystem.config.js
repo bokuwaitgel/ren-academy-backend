@@ -8,7 +8,7 @@ module.exports = {
       interpreter: "none",
       env: {
         PYTHONPATH: ".",
-        RELOAD: "false",
+        RELOAD: "true",
       },
       // Restart policy
       autorestart: true,
