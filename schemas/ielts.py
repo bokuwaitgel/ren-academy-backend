@@ -391,7 +391,7 @@ class TestSummary(BaseModel):
     description:    Optional[str] = None
     test_type:      TestType
     module_type:    ModuleType
-    is_published:   bool
+    is_published:   bool = False
     tags:           List[str] = []
     question_count: int = 0
     has_listening:  bool = False
