@@ -238,6 +238,26 @@ async def test_create(data: dict):
     tags=["Tests"],
 )
 async def test_list(data: dict):
+    published_only = True
+    svc = _ielts_service()
+    return await svc.list_tests(
+        page=int(data.get("page", 1)),
+        page_size=min(int(data.get("page_size", 20)), 100),
+        test_type=data.get("test_type"),
+        published_only=published_only,
+    )
+
+
+@register(
+    name="tests/lists",
+    method="GET",
+    required_keys=[],
+    optional_keys={"page": 1, "page_size": 20, "test_type": None, "published_only": False},
+    summary="List tests",
+    description="List tests with pagination. Candidates see published only.",
+    tags=["Tests"],
+)
+async def test_lists(data: dict):
     user = await _require_auth(data)
     published_only = data.get("published_only", False)
     # Candidates can only see published tests
