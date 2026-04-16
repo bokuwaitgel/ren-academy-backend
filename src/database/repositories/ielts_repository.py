@@ -248,6 +248,25 @@ class TestSessionRepository:
         cursor = self.col.find(query).sort("created_at", -1).skip(skip).limit(limit)
         return [_serialize(d) async for d in cursor]
 
+    async def find_active(
+        self,
+        user_id: str,
+        test_id: str,
+        mode: str,
+        practice_section: Optional[str] = None,
+    ) -> Optional[dict]:
+        """Return the user's in-progress session for this test/mode, if any."""
+        query: dict = {
+            "user_id": user_id,
+            "test_id": test_id,
+            "mode": mode,
+            "status": "in_progress",
+        }
+        if practice_section is not None:
+            query["practice_section"] = practice_section
+        doc = await self.col.find_one(query, sort=[("created_at", -1)])
+        return _serialize(doc) if doc else None
+
     async def count_by_user(self, user_id: str, test_type: Optional[str] = None) -> int:
         query = {"user_id": user_id}
         if test_type:

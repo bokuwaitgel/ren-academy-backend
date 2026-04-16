@@ -608,6 +608,16 @@ class IeltsService:
                     detail=f"Section '{section}' not found in this test",
                 )
 
+        # Return existing in-progress session if one exists for this user/test/mode
+        existing = await self.session_repo.find_active(
+            user_id=user_id,
+            test_id=test_id,
+            mode=mode,
+            practice_section=section if mode == SessionMode.PRACTICE.value else None,
+        )
+        if existing:
+            return TestSessionOut(**existing)
+
         # Build session_sections based on mode
         if mode == SessionMode.FULL_TEST.value:
             # All sections present in the test, ordered by IELTS standard order
