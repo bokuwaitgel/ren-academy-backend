@@ -51,6 +51,7 @@ raw_to_band_reading = _scoring.raw_to_band_reading
 criteria_average_to_band = _scoring.criteria_average_to_band
 calculate_overall_band = _scoring.calculate_overall_band
 from src.database.repositories.ielts_repository import (
+    OrderRepository,
     QuestionRepository,
     TestRepository,
     TestSessionRepository,
@@ -364,10 +365,12 @@ class IeltsService:
         question_repo: QuestionRepository,
         test_repo: TestRepository,
         session_repo: TestSessionRepository,
+        order_repo: Optional[OrderRepository] = None,
     ):
         self.question_repo = question_repo
         self.test_repo = test_repo
         self.session_repo = session_repo
+        self.order_repo = order_repo
 
     # ── Question CRUD ─────────────────────────
 
@@ -593,6 +596,16 @@ class IeltsService:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Test not found")
         if not test.get("is_published"):
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Test is not published yet")
+
+        # Paid-test gate. Free tests (price 0 or unset) bypass entirely.
+        price = float(test.get("price") or 0)
+        if price > 0 and self.order_repo is not None:
+            paid = await self.order_repo.find_paid_for_user_test(user_id, test_id)
+            if not paid:
+                raise HTTPException(
+                    status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                    detail="Payment required for this test",
+                )
 
         test_section_values = _get_available_sections(test)
 

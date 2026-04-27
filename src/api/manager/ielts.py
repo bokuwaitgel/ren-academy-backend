@@ -8,6 +8,7 @@ from pydantic import ValidationError
 from src.api.api_routes import register
 from src.database.mongodb import MongoDB
 from src.database.repositories.ielts_repository import (
+    OrderRepository,
     QuestionRepository,
     TestRepository,
     TestSessionRepository,
@@ -33,6 +34,7 @@ def _ielts_service() -> IeltsService:
         question_repo=QuestionRepository(db),
         test_repo=TestRepository(db),
         session_repo=TestSessionRepository(db),
+        order_repo=OrderRepository(db),
     )
 
 
@@ -212,6 +214,7 @@ async def question_bulk_create(data: dict):
     optional_keys={
         "description": None, "test_type": "ielts", "module_type": "academic",
         "is_published": False, "tags": [],
+        "price": 0.0, "currency": "MNT",
         "listening": None, "reading": None, "writing": None, "speaking": None,
     },
     summary="Create test",
@@ -332,6 +335,7 @@ async def test_get_section_detail(data: dict):
     optional_keys={
         "title": None, "description": None,
         "is_published": None, "tags": None,
+        "price": None, "currency": None,
         "listening": None, "reading": None, "writing": None, "speaking": None,
     },
     summary="Update test",

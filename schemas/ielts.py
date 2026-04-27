@@ -349,6 +349,8 @@ class TestCreate(BaseModel):
     test_type:   TestType = TestType.IELTS
     module_type: ModuleType = ModuleType.ACADEMIC
     is_published: bool = False
+    price:       float = Field(default=0.0, ge=0, description="Listing price; 0 means free")
+    currency:    str = Field(default="MNT", min_length=3, max_length=3, description="ISO 4217 currency code")
     tags:        List[str] = []
     # Modules — all optional; add sections later via tests/section/add
     listening: Optional[ListeningModule] = None
@@ -360,6 +362,8 @@ class TestUpdate(BaseModel):
     title:       Optional[str] = None
     description: Optional[str] = None
     is_published: Optional[bool] = None
+    price:       Optional[float] = Field(default=None, ge=0)
+    currency:    Optional[str] = Field(default=None, min_length=3, max_length=3)
     tags:        Optional[List[str]] = None
     listening:   Optional[ListeningModule] = None
     reading:     Optional[ReadingModule]   = None
@@ -373,6 +377,8 @@ class TestOut(BaseModel):
     test_type:    TestType
     module_type:  ModuleType
     is_published: Optional[bool] = False
+    price:        float = 0.0
+    currency:     str = "MNT"
     tags:         List[str] = []
     question_count: int = 0
     listening:    Optional[ListeningModule] = None
@@ -397,6 +403,8 @@ class TestSummary(BaseModel):
     test_type:      TestType
     module_type:    ModuleType
     is_published:   Optional[bool] = False
+    price:          float = 0.0
+    currency:       str = "MNT"
     tags:           List[str] = []
     question_count: int = 0
     has_listening:  bool = False

@@ -19,6 +19,7 @@ from src.database.repositories.user_repository import UserRepository
 from src.services.auth_service import AuthService
 from src.services.s3_service import S3StorageService
 from src.database.repositories.ielts_repository import (
+    OrderRepository,
     QuestionRepository,
     TestRepository,
     TestSessionRepository,
@@ -34,6 +35,7 @@ async def lifespan(_: FastAPI):
     await UserRepository(db).create_indexes()
     await TestRepository(db).create_indexes()
     await TestSessionRepository(db).create_indexes()
+    await OrderRepository(db).create_indexes()
     # Ensure question indexes
     q_repo = QuestionRepository(db)
     await q_repo.col.create_index("section")

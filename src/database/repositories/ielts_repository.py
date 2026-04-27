@@ -283,6 +283,86 @@ class TestSessionRepository:
 
 
 # ─────────────────────────────────────────────
+# Orders (test purchases via QPay)
+# ─────────────────────────────────────────────
+
+class OrderRepository:
+    def __init__(self, db: AsyncIOMotorDatabase):
+        self.col = db["orders"]
+
+    async def create_indexes(self):
+        await self.col.create_index("user_id")
+        await self.col.create_index("test_id")
+        await self.col.create_index("status")
+        await self.col.create_index("qpay_invoice_id")
+        await self.col.create_index([("user_id", 1), ("test_id", 1), ("status", 1)])
+        await self.col.create_index([("created_at", -1)])
+
+    async def create(self, data: dict) -> dict:
+        data["created_at"] = datetime.now(timezone.utc)
+        result = await self.col.insert_one(data)
+        data["_id"] = result.inserted_id
+        return _serialize(data)
+
+    async def find_by_id(self, oid: str) -> Optional[dict]:
+        doc = await self.col.find_one({"_id": _oid(oid)})
+        return _serialize(doc) if doc else None
+
+    async def find_by_qpay_invoice(self, invoice_id: str) -> Optional[dict]:
+        doc = await self.col.find_one({"qpay_invoice_id": invoice_id})
+        return _serialize(doc) if doc else None
+
+    async def find_paid_for_user_test(self, user_id: str, test_id: str) -> Optional[dict]:
+        doc = await self.col.find_one(
+            {"user_id": user_id, "test_id": test_id, "status": "paid"},
+            sort=[("paid_at", -1)],
+        )
+        return _serialize(doc) if doc else None
+
+    async def find_active_pending(self, user_id: str, test_id: str) -> Optional[dict]:
+        """Return the user's most recent pending order for this test, if any."""
+        doc = await self.col.find_one(
+            {"user_id": user_id, "test_id": test_id, "status": "pending"},
+            sort=[("created_at", -1)],
+        )
+        return _serialize(doc) if doc else None
+
+    async def list(
+        self,
+        skip: int = 0,
+        limit: int = 20,
+        *,
+        status: Optional[str] = None,
+        user_id: Optional[str] = None,
+        test_id: Optional[str] = None,
+    ) -> List[dict]:
+        query: dict = {}
+        if status:  query["status"]  = status
+        if user_id: query["user_id"] = user_id
+        if test_id: query["test_id"] = test_id
+        cursor = self.col.find(query).sort("created_at", -1).skip(skip).limit(limit)
+        return [_serialize(d) async for d in cursor]
+
+    async def count(
+        self,
+        *,
+        status: Optional[str] = None,
+        user_id: Optional[str] = None,
+        test_id: Optional[str] = None,
+    ) -> int:
+        query: dict = {}
+        if status:  query["status"]  = status
+        if user_id: query["user_id"] = user_id
+        if test_id: query["test_id"] = test_id
+        return await self.col.count_documents(query)
+
+    async def update(self, oid: str, data: dict) -> Optional[dict]:
+        data["updated_at"] = datetime.now(timezone.utc)
+        await self.col.update_one({"_id": _oid(oid)}, {"$set": data})
+        return await self.find_by_id(oid)
+
+
+# ─────────────────────────────────────────────
 # Speaking Practice Sessions
 # ─────────────────────────────────────────────
 
