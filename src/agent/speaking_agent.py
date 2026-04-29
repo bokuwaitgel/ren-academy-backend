@@ -134,7 +134,7 @@ class GeminiSpeakingAgent(IeltsSpeakingAgent):
 
     def __init__(self) -> None:
         self._agent: Agent[None, SpeakingEvaluationResult] = Agent(
-            "google-gla:gemini-2.5-pro",
+            "google-gla:gemini-flash-latest",
             output_type=SpeakingEvaluationResult,
             system_prompt=_SYSTEM_PROMPT,
         )

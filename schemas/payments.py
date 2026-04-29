@@ -24,6 +24,8 @@ class OrderStatus(str, Enum):
 
 class OrderCreateRequest(BaseModel):
     test_id: str = Field(..., description="Test the user wants to buy")
+    mode: str = Field(default="full_test", description="Purchase scope: full_test or practice")
+    section: Optional[str] = Field(default=None, description="Required when mode is practice")
 
 
 class InvoicePayload(BaseModel):
@@ -39,6 +41,8 @@ class OrderOut(BaseModel):
     id:               str
     user_id:          str
     test_id:          str
+    purchase_mode:    Optional[str] = None
+    purchase_section: Optional[str] = None
     test_title:       Optional[str] = None
     amount:           float
     currency:         str

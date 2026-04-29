@@ -351,6 +351,7 @@ class TestCreate(BaseModel):
     is_published: bool = False
     price:       float = Field(default=0.0, ge=0, description="Listing price; 0 means free")
     currency:    str = Field(default="MNT", min_length=3, max_length=3, description="ISO 4217 currency code")
+    section_prices: Dict[Literal["listening", "reading", "writing", "speaking"], float] = Field(default_factory=dict)
     tags:        List[str] = []
     # Modules — all optional; add sections later via tests/section/add
     listening: Optional[ListeningModule] = None
@@ -364,6 +365,7 @@ class TestUpdate(BaseModel):
     is_published: Optional[bool] = None
     price:       Optional[float] = Field(default=None, ge=0)
     currency:    Optional[str] = Field(default=None, min_length=3, max_length=3)
+    section_prices: Optional[Dict[Literal["listening", "reading", "writing", "speaking"], float]] = None
     tags:        Optional[List[str]] = None
     listening:   Optional[ListeningModule] = None
     reading:     Optional[ReadingModule]   = None
@@ -379,6 +381,7 @@ class TestOut(BaseModel):
     is_published: Optional[bool] = False
     price:        float = 0.0
     currency:     str = "MNT"
+    section_prices: Dict[Literal["listening", "reading", "writing", "speaking"], float] = Field(default_factory=dict)
     tags:         List[str] = []
     question_count: int = 0
     listening:    Optional[ListeningModule] = None
@@ -405,6 +408,7 @@ class TestSummary(BaseModel):
     is_published:   Optional[bool] = False
     price:          float = 0.0
     currency:       str = "MNT"
+    section_prices: Dict[Literal["listening", "reading", "writing", "speaking"], float] = Field(default_factory=dict)
     tags:           List[str] = []
     question_count: int = 0
     has_listening:  bool = False
@@ -551,6 +555,8 @@ class SessionResult(BaseModel):
 class TestSessionOut(BaseModel):
     id:               str
     test_id:          str
+    test_title:       Optional[str] = None
+    test_module_type: Optional[str] = None
     user_id:          str
     mode:             SessionMode = SessionMode.FULL_TEST
     practice_section: Optional[str] = None

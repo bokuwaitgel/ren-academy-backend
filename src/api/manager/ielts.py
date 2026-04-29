@@ -215,6 +215,7 @@ async def question_bulk_create(data: dict):
         "description": None, "test_type": "ielts", "module_type": "academic",
         "is_published": False, "tags": [],
         "price": 0.0, "currency": "MNT",
+        "section_prices": {},
         "listening": None, "reading": None, "writing": None, "speaking": None,
     },
     summary="Create test",
@@ -336,6 +337,7 @@ async def test_get_section_detail(data: dict):
         "title": None, "description": None,
         "is_published": None, "tags": None,
         "price": None, "currency": None,
+        "section_prices": None,
         "listening": None, "reading": None, "writing": None, "speaking": None,
     },
     summary="Update test",
@@ -741,7 +743,11 @@ async def session_writing_ai_grade(data: dict):
         session_id=data["session_id"],
         section="writing",
         band_score=final_band,
-        details={"ai_evaluations": evaluations},
+        details={
+            "ai_evaluations": evaluations,
+            "prompts": tasks_meta,
+            "answers": writing_answers,
+        },
     )
 
     return {

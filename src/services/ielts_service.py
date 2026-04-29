@@ -198,6 +198,109 @@ def _extract_correct_answer(q: dict) -> Any:
     return None
 
 
+def _extract_question_prompts(q: dict) -> Dict[str, str] | None:
+    """Extract per-item prompt text for objective question types."""
+    q_type = q.get("type", "")
+
+    if q_type in {QuestionType.TRUE_FALSE_NOT_GIVEN, QuestionType.YES_NO_NOT_GIVEN}:
+        items = q.get("tfng_items") or []
+        return {
+            str(i): str(item.get("statement", "")).strip()
+            for i, item in enumerate(items)
+            if str(item.get("statement", "")).strip()
+        }
+
+    if q_type == QuestionType.FORM_COMPLETION:
+        items = q.get("form_fields") or []
+        return {
+            str(i): str(item.get("label", "")).strip()
+            for i, item in enumerate(items)
+            if str(item.get("label", "")).strip()
+        }
+
+    if q_type == QuestionType.TABLE_COMPLETION:
+        items = q.get("table_cells") or []
+        return {
+            str(i): " / ".join(
+                [
+                    str(item.get("row_header", "")).strip(),
+                    str(item.get("col_header", "")).strip(),
+                ]
+            ).strip(" /")
+            for i, item in enumerate(items)
+            if str(item.get("row_header", "")).strip() or str(item.get("col_header", "")).strip()
+        }
+
+    if q_type == QuestionType.FLOW_CHART_COMPLETION:
+        items = [s for s in (q.get("flow_steps") or []) if s.get("is_blank")]
+        return {
+            str(i): str(item.get("description", "")).strip()
+            for i, item in enumerate(items)
+            if str(item.get("description", "")).strip()
+        }
+
+    if q_type in {QuestionType.SENTENCE_COMPLETION, QuestionType.NOTE_COMPLETION}:
+        items = q.get("sentences") or []
+        return {
+            str(i): f"{str(item.get('before', '')).strip()} ____ {str(item.get('after', '')).strip()}".strip()
+            for i, item in enumerate(items)
+        }
+
+    if q_type == QuestionType.SUMMARY_COMPLETION:
+        items = q.get("summary_items") or []
+        return {
+            str(i): f"{str(item.get('before', '')).strip()} ____ {str(item.get('after', '')).strip()}".strip()
+            for i, item in enumerate(items)
+        }
+
+    if q_type == QuestionType.SHORT_ANSWER:
+        items = q.get("short_items") or []
+        return {
+            str(i): str(item.get("question", "")).strip()
+            for i, item in enumerate(items)
+            if str(item.get("question", "")).strip()
+        }
+
+    if q_type in {QuestionType.MAP_LABELLING, QuestionType.PLAN_LABELLING, QuestionType.DIAGRAM_LABELLING}:
+        items = q.get("map_slots") or []
+        return {
+            str(i): " / ".join(
+                [
+                    str(item.get("slot_label", "")).strip(),
+                    str(item.get("position", "")).strip(),
+                ]
+            ).strip(" /")
+            for i, item in enumerate(items)
+            if str(item.get("slot_label", "")).strip() or str(item.get("position", "")).strip()
+        }
+
+    if q_type in {QuestionType.MATCHING, QuestionType.MATCHING_FEATURES, QuestionType.MATCHING_INFORMATION}:
+        items = q.get("matching_items") or []
+        return {
+            str(i): str(item.get("item", "")).strip()
+            for i, item in enumerate(items)
+            if str(item.get("item", "")).strip()
+        }
+
+    if q_type == QuestionType.MATCHING_HEADINGS:
+        items = q.get("heading_items") or []
+        return {
+            str(i): str(item.get("paragraph_label", "")).strip()
+            for i, item in enumerate(items)
+            if str(item.get("paragraph_label", "")).strip()
+        }
+
+    if q_type == QuestionType.PICK_FROM_LIST:
+        items = q.get("pick_items") or []
+        return {
+            str(i): str(item.get("question", "")).strip()
+            for i, item in enumerate(items)
+            if str(item.get("question", "")).strip()
+        }
+
+    return None
+
+
 def _score_question(question: dict, user_answer: Any) -> tuple[int, int]:
     """
     Score a single question.
@@ -353,6 +456,33 @@ def _get_question_ids_for_section(test: dict, section: str) -> List[str]:
         for part in (test.get("speaking") or {}).get("parts", []):
             ids.extend(part.get("question_ids", []))
     return ids
+
+
+def _extract_section_context(test: dict, section: str) -> Dict[str, Any] | None:
+    """Extract display context for result page by section (audio/passage metadata)."""
+    if section == SectionType.LISTENING.value:
+        listening_sections = [
+            {
+                "section_number": sec.get("section_number"),
+                "audio_url": sec.get("audio_url"),
+            }
+            for sec in (test.get("listening") or {}).get("sections", [])
+            if sec.get("audio_url")
+        ]
+        return {"listening_sections": listening_sections} if listening_sections else None
+
+    if section == SectionType.READING.value:
+        reading_sections = [
+            {
+                "section_number": sec.get("section_number"),
+                "passage": sec.get("passage"),
+            }
+            for sec in (test.get("reading") or {}).get("sections", [])
+            if sec.get("passage")
+        ]
+        return {"reading_sections": reading_sections} if reading_sections else None
+
+    return None
 
 
 # ─────────────────────────────────────────────
@@ -597,16 +727,6 @@ class IeltsService:
         if not test.get("is_published"):
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Test is not published yet")
 
-        # Paid-test gate. Free tests (price 0 or unset) bypass entirely.
-        price = float(test.get("price") or 0)
-        if price > 0 and self.order_repo is not None:
-            paid = await self.order_repo.find_paid_for_user_test(user_id, test_id)
-            if not paid:
-                raise HTTPException(
-                    status_code=status.HTTP_402_PAYMENT_REQUIRED,
-                    detail="Payment required for this test",
-                )
-
         test_section_values = _get_available_sections(test)
 
         if mode == SessionMode.PRACTICE.value:
@@ -621,7 +741,8 @@ class IeltsService:
                     detail=f"Section '{section}' not found in this test",
                 )
 
-        # Return existing in-progress session if one exists for this user/test/mode
+        # Return existing in-progress session if one exists for this user/test/mode.
+        # The order was already consumed when this session was created, so a resume is free.
         existing = await self.session_repo.find_active(
             user_id=user_id,
             test_id=test_id,
@@ -630,6 +751,32 @@ class IeltsService:
         )
         if existing:
             return TestSessionOut(**existing)
+
+        # Paid-test gate. One paid order = one session. Once a session is created
+        # we mark the order consumed; finishing/abandoning that session does not
+        # restore the entitlement — the user must buy again.
+        if mode == SessionMode.PRACTICE.value:
+            section_prices = test.get("section_prices") or {}
+            default_price = float(test.get("price") or 0)
+            if isinstance(section_prices, dict) and section in section_prices:
+                price = float(section_prices.get(section) or 0)
+            else:
+                price = default_price
+        else:
+            price = float(test.get("price") or 0)
+        order_to_consume: Optional[Dict[str, Any]] = None
+        if price > 0 and self.order_repo is not None:
+            order_to_consume = await self.order_repo.find_paid_unconsumed_for_user_test(
+                user_id,
+                test_id,
+                purchase_mode=mode,
+                purchase_section=section if mode == SessionMode.PRACTICE.value else None,
+            )
+            if not order_to_consume:
+                raise HTTPException(
+                    status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                    detail="Payment required for this test",
+                )
 
         # Build session_sections based on mode
         if mode == SessionMode.FULL_TEST.value:
@@ -684,6 +831,11 @@ class IeltsService:
             "updated_at": datetime.now(timezone.utc),
         }
         doc = await self.session_repo.create(session_data)
+
+        # Bind the paid order to this session — one purchase, one attempt.
+        if order_to_consume is not None and self.order_repo is not None:
+            await self.order_repo.mark_consumed(order_to_consume["id"], doc["id"])
+
         return TestSessionOut(**doc)
 
     async def start_section(self, user_id: str, session_id: str) -> TestSessionOut:
@@ -808,6 +960,7 @@ class IeltsService:
                         "question_id": q["id"],
                         "title": q.get("title", ""),
                         "type": q.get("type", ""),
+                        "question_prompts": _extract_question_prompts(q),
                         "user_answer": user_ans,
                         "correct_answer": _extract_correct_answer(q),
                         "is_correct": earned == max_pts and max_pts > 0,
@@ -825,7 +978,10 @@ class IeltsService:
                     "raw_score": total_earned,
                     "max_score": total_max,
                     "band_score": band,
-                    "details": {"answer_details": answer_details},
+                    "details": {
+                        "answer_details": answer_details,
+                        "section_context": _extract_section_context(test, section),
+                    },
                 }
 
                 existing_scores: List[Dict[str, Any]] = session.get("section_scores") or []
@@ -1145,6 +1301,7 @@ class IeltsService:
                         "question_id": q["id"],
                         "title": q.get("title", ""),
                         "type": q.get("type", ""),
+                        "question_prompts": _extract_question_prompts(q),
                         "user_answer": user_ans,
                         "correct_answer": _extract_correct_answer(q),
                         "earned": earned,
@@ -1154,10 +1311,16 @@ class IeltsService:
             # Calculate band score
             if section_type == SectionType.LISTENING.value:
                 band = raw_to_band_listening(total_earned)
-                details: Optional[Dict[str, Any]] = {"answer_details": answer_details}
+                details: Optional[Dict[str, Any]] = {
+                    "answer_details": answer_details,
+                    "section_context": _extract_section_context(test, section_type),
+                }
             elif section_type == SectionType.READING.value:
                 band = raw_to_band_reading(total_earned, is_academic=is_academic)
-                details = {"answer_details": answer_details}
+                details = {
+                    "answer_details": answer_details,
+                    "section_context": _extract_section_context(test, section_type),
+                }
             elif section_type in {SectionType.WRITING.value, SectionType.SPEAKING.value}:
                 # Preserve existing score if already graded
                 existing = existing_scores.get(section_type)
@@ -1234,6 +1397,7 @@ class IeltsService:
         session = await self._get_session_or_fail(session_id)
         if user_id and session["user_id"] != user_id:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not your session")
+        await self._enrich_sessions_with_test_meta([session])
         return TestSessionOut(**session)
 
     async def list_user_sessions(
@@ -1246,6 +1410,7 @@ class IeltsService:
         skip = (page - 1) * page_size
         total = await self.session_repo.count_by_user(user_id, test_type=test_type)
         docs = await self.session_repo.find_by_user(user_id, skip=skip, limit=page_size, test_type=test_type)
+        await self._enrich_sessions_with_test_meta(docs)
         total_pages = max(1, (total + page_size - 1) // page_size)
         return PaginatedResponse(
             items=[TestSessionOut(**d) for d in docs],
@@ -1254,6 +1419,30 @@ class IeltsService:
             page_size=page_size,
             total_pages=total_pages,
         )
+
+    async def _enrich_sessions_with_test_meta(self, sessions: List[Dict[str, Any]]) -> None:
+        """Attach test_title + test_module_type to each session in-place. One round-trip per unique test."""
+        if not sessions:
+            return
+        unique_test_ids = list({s.get("test_id") for s in sessions if s.get("test_id")})
+        meta: Dict[str, Dict[str, Any]] = {}
+        for tid in unique_test_ids:
+            if tid is None:
+                continue
+            try:
+                doc = await self.test_repo.find_by_id(str(tid))
+                if doc:
+                    meta[tid] = {
+                        "title": doc.get("title", ""),
+                        "module_type": doc.get("module_type"),
+                    }
+            except Exception:
+                continue
+        for s in sessions:
+            entry = meta.get(s.get("test_id"))
+            if entry:
+                s.setdefault("test_title", entry["title"])
+                s.setdefault("test_module_type", entry["module_type"])
 
     async def get_session_result(self, session_id: str, user_id: Optional[str] = None) -> SessionResult:
         session = await self._get_session_or_fail(session_id)

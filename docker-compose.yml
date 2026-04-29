@@ -14,6 +14,12 @@ services:
       HOST: 0.0.0.0
       PORT: 8000
       WORKERS: 4
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/docs"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     mem_limit: 1g
     mem_reservation: 512m
     deploy:

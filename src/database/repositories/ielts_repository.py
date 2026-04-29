@@ -312,17 +312,76 @@ class OrderRepository:
         doc = await self.col.find_one({"qpay_invoice_id": invoice_id})
         return _serialize(doc) if doc else None
 
-    async def find_paid_for_user_test(self, user_id: str, test_id: str) -> Optional[dict]:
+    async def find_paid_for_user_test(
+        self,
+        user_id: str,
+        test_id: str,
+        purchase_mode: Optional[str] = None,
+        purchase_section: Optional[str] = None,
+    ) -> Optional[dict]:
+        query: dict = {"user_id": user_id, "test_id": test_id, "status": "paid"}
+        if purchase_mode is not None:
+            query["purchase_mode"] = purchase_mode
+        if purchase_mode == "practice":
+            query["purchase_section"] = purchase_section
+        doc = await self.col.find_one(query, sort=[("paid_at", -1)])
+        return _serialize(doc) if doc else None
+
+    async def find_paid_unconsumed_for_user_test(
+        self,
+        user_id: str,
+        test_id: str,
+        purchase_mode: Optional[str] = None,
+        purchase_section: Optional[str] = None,
+    ) -> Optional[dict]:
+        """Return the user's most recent paid order that has not yet been spent on a session."""
+        query: dict = {
+            "user_id": user_id,
+            "test_id": test_id,
+            "status": "paid",
+            "$or": [
+                {"consumed_session_id": {"$exists": False}},
+                {"consumed_session_id": None},
+            ],
+        }
+        if purchase_mode is not None:
+            query["purchase_mode"] = purchase_mode
+        if purchase_mode == "practice":
+            query["purchase_section"] = purchase_section
+
         doc = await self.col.find_one(
-            {"user_id": user_id, "test_id": test_id, "status": "paid"},
+            query,
             sort=[("paid_at", -1)],
         )
         return _serialize(doc) if doc else None
 
-    async def find_active_pending(self, user_id: str, test_id: str) -> Optional[dict]:
+    async def mark_consumed(self, oid: str, session_id: str) -> Optional[dict]:
+        """Bind a paid order to the session it was used to start. One order = one session."""
+        await self.col.update_one(
+            {"_id": _oid(oid)},
+            {"$set": {
+                "consumed_session_id": session_id,
+                "consumed_at": datetime.now(timezone.utc),
+                "updated_at": datetime.now(timezone.utc),
+            }},
+        )
+        return await self.find_by_id(oid)
+
+    async def find_active_pending(
+        self,
+        user_id: str,
+        test_id: str,
+        purchase_mode: Optional[str] = None,
+        purchase_section: Optional[str] = None,
+    ) -> Optional[dict]:
         """Return the user's most recent pending order for this test, if any."""
+        query: dict = {"user_id": user_id, "test_id": test_id, "status": "pending"}
+        if purchase_mode is not None:
+            query["purchase_mode"] = purchase_mode
+        if purchase_mode == "practice":
+            query["purchase_section"] = purchase_section
         doc = await self.col.find_one(
-            {"user_id": user_id, "test_id": test_id, "status": "pending"},
+            query,
             sort=[("created_at", -1)],
         )
         return _serialize(doc) if doc else None

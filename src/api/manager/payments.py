@@ -20,7 +20,11 @@ from pydantic import ValidationError
 
 from src.api.api_routes import register
 from src.database.mongodb import MongoDB
-from src.database.repositories.ielts_repository import OrderRepository, TestRepository
+from src.database.repositories.ielts_repository import (
+    OrderRepository,
+    TestRepository,
+    TestSessionRepository,
+)
 from src.database.repositories.user_repository import UserRepository
 from src.services.auth_service import AuthService
 from src.services.payment_service import PaymentService
@@ -36,6 +40,7 @@ def _services():
         PaymentService(
             order_repo=OrderRepository(db),
             test_repo =TestRepository(db),
+            session_repo=TestSessionRepository(db),
         ),
         AuthService(UserRepository(db)),
     )
@@ -77,6 +82,7 @@ def _clean_meta(data: dict):
     name="payments/create-invoice",
     method="POST",
     required_keys=["test_id"],
+    optional_keys={"mode": "full_test", "section": None},
     summary="Create payment invoice for a test",
     description="Create an order + QPay invoice for the given test. Returns the order with QR / deeplinks.",
     tags=["Payments"],
@@ -89,7 +95,12 @@ async def payments_create_invoice(data: dict):
     except ValidationError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=exc.errors())
     svc, _ = _services()
-    return await svc.create_order(user_id=user.id, test_id=payload.test_id)
+    return await svc.create_order(
+        user_id=user.id,
+        test_id=payload.test_id,
+        mode=payload.mode,
+        section=payload.section,
+    )
 
 
 @register(
@@ -128,6 +139,55 @@ async def payments_my_orders(data: dict):
         user_id=user.id,
         page=int(data.get("page", 1)),
         page_size=min(int(data.get("page_size", 20)), 100),
+    )
+
+
+@register(
+    name="payments/access-status",
+    method="GET",
+    required_keys=["test_id"],
+    optional_keys={"mode": "full_test", "section": None},
+    summary="Check access status for a test",
+    description=(
+        "Returns one of:\n"
+        "- `free` — the test has no price\n"
+        "- `in_progress` — the user has an unfinished session (resume it)\n"
+        "- `unstarted_paid` — the user paid but has not started (start it)\n"
+        "- `unowned` — the user must purchase to start\n"
+    ),
+    tags=["Payments"],
+)
+async def payments_access_status(data: dict):
+    user = await _require_auth(data)
+    svc, _ = _services()
+    return await svc.access_status(
+        user_id=user.id,
+        test_id=data["test_id"],
+        mode=str(data.get("mode", "full_test")),
+        section=data.get("section"),
+    )
+
+
+@register(
+    name="payments/access-statuses",
+    method="POST",
+    required_keys=["test_ids"],
+    optional_keys={"mode": "full_test", "section": None},
+    summary="Bulk access-status lookup",
+    description="Same as /payments/access-status but for a list of test ids — used by the dashboard.",
+    tags=["Payments"],
+)
+async def payments_access_statuses(data: dict):
+    user = await _require_auth(data)
+    test_ids = data.get("test_ids") or []
+    if not isinstance(test_ids, list):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="'test_ids' must be a list")
+    svc, _ = _services()
+    return await svc.access_statuses(
+        user_id=user.id,
+        test_ids=[str(t) for t in test_ids],
+        mode=str(data.get("mode", "full_test")),
+        section=data.get("section"),
     )
 
 
