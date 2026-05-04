@@ -28,6 +28,7 @@ FROM python:3.13-slim AS runtime
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PATH="/opt/venv/bin:$PATH" \
+    HOME=/home/appuser \
     HOST=0.0.0.0 \
     PORT=8000 \
     WORKERS=4
@@ -36,7 +37,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         curl \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --system --gid 1001 appuser \
-    && useradd --system --uid 1001 --gid appuser --shell /bin/bash appuser
+    && useradd --system --uid 1001 --gid appuser --create-home --home-dir /home/appuser --shell /bin/bash appuser \
+    && chown -R appuser:appuser /home/appuser
 
 COPY --from=builder /opt/venv /opt/venv
 
