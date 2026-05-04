@@ -1,71 +1,22 @@
 services:
-  frontend:
+  backend:
     build:
       context: .
       dockerfile: Dockerfile
-      args:
-        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL}
-    image: e-test-ren-frontend:latest
-    container_name: ren-frontend
+    image: ren-academy-backend:latest
+    container_name: ren-backend
     restart: unless-stopped
     env_file:
       - ./.env
-    expose:
-      - "3000"
+    ports:
+      - "8000:8000"
     environment:
-      NODE_ENV: production
-      PORT: 3000
-      HOSTNAME: 0.0.0.0
+      HOST: 0.0.0.0
+      PORT: 8000
+      WORKERS: 4
     healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000/"]
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/docs"]
       interval: 30s
       timeout: 5s
       retries: 3
       start_period: 20s
-    mem_limit: 1536m
-    mem_reservation: 768m
-    deploy:
-      resources:
-        limits:
-          memory: 1536m
-        reservations:
-          memory: 768m
-
-  nginx:
-    image: nginx:1.27-alpine
-    container_name: ren-frontend-nginx
-    restart: unless-stopped
-    depends_on:
-      frontend:
-        condition: service_healthy
-    ports:
-      - "80:80"
-      - "443:443"
-    command: ["/bin/sh", "/docker-entrypoint-custom.sh"]
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    environment:
-      BACKEND_UPSTREAM: ${BACKEND_UPSTREAM:-http://host.docker.internal:8000}
-      PANEL_UPSTREAM: ${PANEL_UPSTREAM:-http://host.docker.internal:5000}
-    volumes:
-      - ./nginx/entrypoint.sh:/docker-entrypoint-custom.sh:ro
-      - ./nginx/conf/default-http.conf:/etc/nginx/templates/default-http.conf:ro
-      - ./nginx/conf/default-ssl.conf:/etc/nginx/templates/default-ssl.conf:ro
-      - ./certbot/conf:/etc/letsencrypt
-      - ./certbot/www:/var/www/certbot
-    healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
-
-  certbot:
-    image: certbot/certbot:latest
-    container_name: ren-frontend-certbot
-    restart: unless-stopped
-    volumes:
-      - ./certbot/conf:/etc/letsencrypt
-      - ./certbot/www:/var/www/certbot
-    entrypoint: >-
-      /bin/sh -c 'trap exit TERM; while :; do certbot renew --webroot -w /var/www/certbot --quiet; sleep 12h; done'
