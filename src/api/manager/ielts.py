@@ -60,14 +60,14 @@ async def _require_auth(payload: dict):
 
 async def _require_admin(payload: dict):
     user = await _require_auth(payload)
-    if user.role != "admin":
+    if user.role not in {"admin", "super_admin", "super-admin"}:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
     return user
 
 
 async def _require_admin_or_examiner(payload: dict):
     user = await _require_auth(payload)
-    if user.role not in {"admin", "examiner"}:
+    if user.role not in {"admin", "examiner", "super_admin", "super-admin"}:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin or examiner access required")
     return user
 

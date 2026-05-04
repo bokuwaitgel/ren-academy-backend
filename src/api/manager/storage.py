@@ -36,7 +36,9 @@ async def _current_user(payload: dict) -> UserResponse:
 
 
 def _require_roles(user: UserResponse, *roles: str):
-    if user.role not in roles:
+    # super_admin always has access regardless of the requested roles
+    allowed = set(roles) | {"super_admin", "super-admin"}
+    if user.role not in allowed:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=f"Access denied. Required role: {', '.join(roles)}",

@@ -18,6 +18,8 @@ from src.database.repositories.ielts_repository import (
 from src.database.repositories.user_repository import UserRepository
 from src.services.auth_service import AuthService
 from src.services.ielts_service import IeltsService
+from schemas.auth import UserCreate
+from pydantic import ValidationError
 
 
 # ── Helpers ───────────────────────────────────
@@ -131,6 +133,30 @@ async def admin_users_list(data: dict):
         "page_size": page_size,
         "total_pages": total_pages,
     }
+
+
+@register(
+    name="admin/users/create",
+    method="POST",
+    required_keys=["username", "email", "password"],
+    optional_keys={"role": "candidate"},
+    summary="Create user (super-admin)",
+    description="Create a new user account. Only super-admins can perform this action.",
+    tags=["Admin"],
+)
+async def admin_users_create(data: dict):
+    user, ielts_svc, auth_svc, user_repo = await _require_super_admin(data)
+    payload_data = {
+        "username": data["username"],
+        "email": data["email"],
+        "password": data["password"],
+        "role": data.get("role", "candidate"),
+    }
+    try:
+        payload = UserCreate(**payload_data)
+    except ValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=exc.errors())
+    return await auth_svc.register(payload)
 
 
 @register(

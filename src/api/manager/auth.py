@@ -60,7 +60,7 @@ async def auth_me(data: dict):
 async def auth_list_users(data: dict):
     token = _extract_token(data, field="access_token")
     user = await _auth_service().get_current_user(token)
-    if user.role != "admin":
+    if user.role not in {"admin", "super_admin", "super-admin"}:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
 
     page = int(data.get("page", 1))
