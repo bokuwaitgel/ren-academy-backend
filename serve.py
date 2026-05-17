@@ -1,6 +1,8 @@
 
 from contextlib import asynccontextmanager
 
+import asyncio
+import logging
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -24,8 +26,36 @@ from src.database.repositories.ielts_repository import (
     TestRepository,
     TestSessionRepository,
 )
+from src.database.repositories.partner_repository import (
+    CampaignRepository,
+    PartnerRepository,
+    PromoCodeRepository,
+    RedemptionRepository,
+)
+from src.services.promo_service import PromoService
 
 load_dotenv()
+
+_PROMO_EXPIRY_INTERVAL_SEC = int(os.getenv("PROMO_EXPIRY_INTERVAL_SEC", "3600"))
+_log = logging.getLogger("promo.expiry")
+
+
+async def _promo_expiry_loop(db) -> None:
+    """Background task — runs every hour, expires past-due promo codes."""
+    promo = PromoService(
+        partner_repo=PartnerRepository(db),
+        campaign_repo=CampaignRepository(db),
+        code_repo=PromoCodeRepository(db),
+        redemption_repo=RedemptionRepository(db),
+    )
+    while True:
+        try:
+            n = await promo.expire_due_codes()
+            if n:
+                _log.info("[promo-expiry] expired %d code(s)", n)
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("[promo-expiry] task error: %s", exc)
+        await asyncio.sleep(_PROMO_EXPIRY_INTERVAL_SEC)
 
 
 @asynccontextmanager
@@ -36,15 +66,25 @@ async def lifespan(_: FastAPI):
     await TestRepository(db).create_indexes()
     await TestSessionRepository(db).create_indexes()
     await OrderRepository(db).create_indexes()
+    await PartnerRepository(db).create_indexes()
+    await CampaignRepository(db).create_indexes()
+    await PromoCodeRepository(db).create_indexes()
+    await RedemptionRepository(db).create_indexes()
     # Ensure question indexes
     q_repo = QuestionRepository(db)
     await q_repo.col.create_index("section")
     await q_repo.col.create_index("type")
     await q_repo.col.create_index("module_type")
     await q_repo.col.create_index([("created_at", -1)])
+    expiry_task = asyncio.create_task(_promo_expiry_loop(db))
     try:
         yield
     finally:
+        expiry_task.cancel()
+        try:
+            await expiry_task
+        except (asyncio.CancelledError, Exception):
+            pass
         await MongoDB.disconnect()
 
 

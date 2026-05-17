@@ -26,23 +26,48 @@ from src.database.repositories.ielts_repository import (
     TestSessionRepository,
 )
 from src.database.repositories.user_repository import UserRepository
+from src.database.repositories.partner_repository import (
+    CampaignRepository,
+    PartnerRepository,
+    PromoCodeRepository,
+    RedemptionRepository,
+)
 from src.services.auth_service import AuthService
 from src.services.payment_service import PaymentService
+from src.services.promo_service import PromoService
 
 from schemas.payments import OrderCreateRequest
+from schemas.partners import PromoValidateRequest
 
 
 # ── Helpers ───────────────────────────────────
 
 def _services():
     db = MongoDB.get_db()
+    promo_svc = PromoService(
+        partner_repo=PartnerRepository(db),
+        campaign_repo=CampaignRepository(db),
+        code_repo=PromoCodeRepository(db),
+        redemption_repo=RedemptionRepository(db),
+    )
     return (
         PaymentService(
             order_repo=OrderRepository(db),
             test_repo =TestRepository(db),
             session_repo=TestSessionRepository(db),
+            promo_service=promo_svc,
         ),
         AuthService(UserRepository(db)),
+    )
+
+
+def _promo_service() -> PromoService:
+    db = MongoDB.get_db()
+    return PromoService(
+        partner_repo=PartnerRepository(db),
+        campaign_repo=CampaignRepository(db),
+        code_repo=PromoCodeRepository(db),
+        redemption_repo=RedemptionRepository(db),
     )
 
 
@@ -82,7 +107,7 @@ def _clean_meta(data: dict):
     name="payments/create-invoice",
     method="POST",
     required_keys=["test_id"],
-    optional_keys={"mode": "full_test", "section": None},
+    optional_keys={"mode": "full_test", "section": None, "promo_code": None},
     summary="Create payment invoice for a test",
     description="Create an order + QPay invoice for the given test. Returns the order with QR / deeplinks.",
     tags=["Payments"],
@@ -100,6 +125,41 @@ async def payments_create_invoice(data: dict):
         test_id=payload.test_id,
         mode=payload.mode,
         section=payload.section,
+        promo_code=payload.promo_code,
+    )
+
+
+@register(
+    name="payments/promo/validate",
+    method="POST",
+    required_keys=["code", "test_id"],
+    optional_keys={"mode": "full_test", "section": None},
+    summary="Validate a promo code for a given test",
+    description="Returns price preview if the code is valid; otherwise the rejection reason. Read-only — no reservation.",
+    tags=["Payments"],
+)
+async def payments_promo_validate(data: dict):
+    user = await _require_auth(data)
+    _clean_meta(data)
+    try:
+        req = PromoValidateRequest(**data)
+    except ValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=exc.errors())
+
+    svc, _ = _services()
+    test = await svc.test_repo.find_by_id(req.test_id)
+    if not test:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Test not found")
+    amount = svc._resolve_price_for_scope(test, req.mode, req.section)
+    if amount <= 0:
+        return {"valid": False, "reason": "Free test — promo not applicable"}
+
+    promo = _promo_service()
+    return await promo.preview_redeem(
+        code=req.code,
+        user_id=user.id,
+        original_amount=amount,
+        currency=test.get("currency") or "MNT",
     )
 
 

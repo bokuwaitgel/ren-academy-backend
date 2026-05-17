@@ -26,6 +26,7 @@ class OrderCreateRequest(BaseModel):
     test_id: str = Field(..., description="Test the user wants to buy")
     mode: str = Field(default="full_test", description="Purchase scope: full_test or practice")
     section: Optional[str] = Field(default=None, description="Required when mode is practice")
+    promo_code: Optional[str] = Field(default=None, description="Optional partner promo code")
 
 
 class InvoicePayload(BaseModel):
@@ -56,6 +57,11 @@ class OrderOut(BaseModel):
     manual:           bool = False
     manual_note:      Optional[str] = None
     manual_admin_id:  Optional[str] = None
+    promo_code:       Optional[str] = None
+    promo_code_id:    Optional[str] = None
+    promo_campaign_id: Optional[str] = None
+    original_amount:  Optional[float] = None
+    discount_amount:  Optional[float] = None
     created_at:       datetime
     updated_at:       Optional[datetime] = None
 

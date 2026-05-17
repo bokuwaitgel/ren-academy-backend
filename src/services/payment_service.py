@@ -23,6 +23,13 @@ from src.database.repositories.ielts_repository import (
 from src.services.qpay_client import QPayClient, QPayError
 from schemas.payments import OrderStatus
 
+# Forward-ref import only used at runtime to avoid an import cycle.
+# (PromoService imports nothing from this module.)
+try:
+    from src.services.promo_service import PromoService  # type: ignore
+except Exception:  # pragma: no cover
+    PromoService = None  # type: ignore
+
 
 BACKEND_PUBLIC_URL = os.getenv("BACKEND_PUBLIC_URL", "http://localhost:8000").rstrip("/")
 
@@ -35,11 +42,13 @@ class PaymentService:
         test_repo:  TestRepository,
         session_repo: Optional[TestSessionRepository] = None,
         qpay:       Optional[QPayClient] = None,
+        promo_service: Optional["PromoService"] = None,
     ):
-        self.order_repo   = order_repo
-        self.test_repo    = test_repo
-        self.session_repo = session_repo
-        self.qpay         = qpay or QPayClient.instance()
+        self.order_repo    = order_repo
+        self.test_repo     = test_repo
+        self.session_repo  = session_repo
+        self.qpay          = qpay or QPayClient.instance()
+        self.promo_service = promo_service
 
     # ── Public read helpers ───────────────────────────────────
 
@@ -218,6 +227,7 @@ class PaymentService:
         test_id: str,
         mode: str = "full_test",
         section: Optional[str] = None,
+        promo_code: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Create a pending order + QPay invoice. Returns the order with invoice payload attached."""
         test = await self.test_repo.find_by_id(test_id)
@@ -239,6 +249,25 @@ class PaymentService:
 
         if amount <= 0:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="This test is free — no payment required")
+
+        # ── Optional: promo code validation (preview only — reservation happens after we have an order_id) ──
+        original_amount   = amount
+        discount_amount   = 0.0
+        promo_validation: Optional[Dict[str, Any]] = None
+        if promo_code and self.promo_service is not None:
+            promo_validation = await self.promo_service.preview_redeem(
+                code=promo_code,
+                user_id=user_id,
+                original_amount=amount,
+                currency=currency,
+            )
+            if not promo_validation.get("valid"):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=promo_validation.get("reason") or "Promo code is invalid",
+                )
+            amount          = float(promo_validation["amount_after"])
+            discount_amount = float(promo_validation["amount_discounted"])
 
         # Already own an unused entitlement? Don't double-bill. Once that entitlement
         # has been spent on a session (consumed_session_id set) we let the user buy again.
@@ -272,17 +301,18 @@ class PaymentService:
                 )
 
         # Reuse an existing pending order so the user doesn't get a fresh QR every click.
-        existing_pending = await self.order_repo.find_active_pending(
-            user_id,
-            test_id,
-            purchase_mode=mode,
-            purchase_section=section if mode == "practice" else None,
-        )
-        if existing_pending and existing_pending.get("qpay_invoice_id"):
-            return existing_pending
+        # (Only when no promo code was supplied — a new promo means a new pricing.)
+        if not promo_code:
+            existing_pending = await self.order_repo.find_active_pending(
+                user_id,
+                test_id,
+                purchase_mode=mode,
+                purchase_section=section if mode == "practice" else None,
+            )
+            if existing_pending and existing_pending.get("qpay_invoice_id"):
+                return existing_pending
 
-        # 1) Create the order shell so we have an order_id to reference in QPay.
-        order = await self.order_repo.create({
+        order_doc: Dict[str, Any] = {
             "user_id":   user_id,
             "test_id":   test_id,
             "purchase_mode": mode,
@@ -291,7 +321,34 @@ class PaymentService:
             "currency":  currency,
             "status":    OrderStatus.PENDING.value,
             "manual":    False,
-        })
+        }
+        if promo_validation is not None:
+            order_doc["promo_code"]        = promo_code
+            order_doc["original_amount"]   = original_amount
+            order_doc["discount_amount"]   = discount_amount
+        order = await self.order_repo.create(order_doc)
+
+        # Reserve the promo code now that we have an order_id. On collision, fail & cleanup.
+        if promo_validation is not None and self.promo_service is not None:
+            try:
+                reserved = await self.promo_service.reserve_code(
+                    code=promo_code or "",
+                    order_id=order["id"],
+                    user_id=user_id,
+                )
+            except HTTPException:
+                await self.order_repo.update(order["id"], {"status": OrderStatus.FAILED.value,
+                                                            "error":  "promo_reservation_failed"})
+                raise
+            order = await self.order_repo.update(order["id"], {
+                "promo_code_id":     reserved["id"],
+                "promo_campaign_id": reserved["campaign_id"],
+            }) or order
+
+            # 100%-free path: skip QPay entirely and flip to paid immediately.
+            if amount <= 0:
+                order = await self._mark_paid(order["id"], manual=False)
+                return order  # type: ignore[return-value]
 
         # 2) Create the QPay invoice. callback_url points back to our webhook with order_id.
         callback_url = f"{BACKEND_PUBLIC_URL}/api/payments/qpay-callback?order_id={order['id']}"
@@ -310,6 +367,8 @@ class PaymentService:
                 "status": OrderStatus.FAILED.value,
                 "error":  str(e),
             })
+            if self.promo_service is not None:
+                await self.promo_service.release_code_for_order(order["id"])
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail={
@@ -400,7 +459,10 @@ class PaymentService:
         }
         if note:     update["cancel_note"] = note
         if qpay_err: update["qpay_error"]  = qpay_err
-        return await self.order_repo.update(order_id, update)  # type: ignore[return-value]
+        result = await self.order_repo.update(order_id, update)
+        if self.promo_service is not None:
+            await self.promo_service.release_code_for_order(order_id)
+        return result  # type: ignore[return-value]
 
     async def admin_refund_order(self, order_id: str, *, note: Optional[str]) -> Dict[str, Any]:
         order = await self.order_repo.find_by_id(order_id)
@@ -455,6 +517,12 @@ class PaymentService:
         result = await self.order_repo.update(order_id, update)
         if result is None:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to mark order paid")
+        # Commit promo redemption if this order was paid with a promo code.
+        if self.promo_service is not None and result.get("promo_code_id"):
+            try:
+                await self.promo_service.commit_redemption(order=result)
+            except Exception:  # never block payment confirmation on bookkeeping errors
+                pass
         return result
 
     async def _enrich_with_test_titles(self, orders: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
