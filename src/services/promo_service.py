@@ -187,6 +187,15 @@ class PromoService:
             result["reason"] = "Та энэ кампанит ажилд аль хэдийн нэг код ашигласан байна"
             return result
 
+        # Race-safety: also block if the same user already has a *reserved* code
+        # in this campaign. Without this, one user could open multiple checkouts
+        # and reserve several codes from the same campaign before paying any of them.
+        if await self.code_repo.user_has_reservation_in_campaign(
+            user_id=user_id, campaign_id=campaign["id"], code=code_doc["code"],
+        ):
+            result["reason"] = "Та энэ кампанит ажилд код аль хэдийн идэвхжүүлсэн байна"
+            return result
+
         code_type = campaign["code_type"]
         result["code_type"] = code_type
 
@@ -278,50 +287,73 @@ class PromoService:
     # ── Partner-portal aggregates ────────────────────────────
 
     async def partner_summary(self, partner_id: str) -> Dict[str, Any]:
+        """Partner-facing summary. Per business rules, partners must NOT see financial
+        figures (gross sales, payout). This returns only code-inventory + redemption counts."""
         partner = await self.partner_repo.find_by_id(partner_id)
         if not partner:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Partner not found")
 
-        total      = await self.code_repo.count(partner_id=partner_id)
-        used       = await self.code_repo.count(partner_id=partner_id, status=PromoCodeStatus.USED.value)
-        reserved   = await self.code_repo.count(partner_id=partner_id, status=PromoCodeStatus.RESERVED.value)
-        active     = await self.code_repo.count(partner_id=partner_id, status=PromoCodeStatus.ACTIVE.value)
-        expired    = await self.code_repo.count(partner_id=partner_id, status=PromoCodeStatus.EXPIRED.value)
-        revoked    = await self.code_repo.count(partner_id=partner_id, status=PromoCodeStatus.REVOKED.value)
-        campaigns  = await self.campaign_repo.count_by_partner(partner_id)
+        total     = await self.code_repo.count(partner_id=partner_id)
+        used      = await self.code_repo.count(partner_id=partner_id, status=PromoCodeStatus.USED.value)
+        active    = await self.code_repo.count(partner_id=partner_id, status=PromoCodeStatus.ACTIVE.value)
+        revoked   = await self.code_repo.count(partner_id=partner_id, status=PromoCodeStatus.REVOKED.value)
+        campaigns_active = await self.campaign_repo.count_by_partner(
+            partner_id, status=CampaignStatus.ACTIVE.value,
+        )
 
         now = _now()
         month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-
-        red_total = await self.redemption_repo.count(partner_id=partner_id)
         red_month = await self.redemption_repo.count(partner_id=partner_id, since=month_start)
 
+        return {
+            "partner": {
+                "id":               partner_id,
+                "name":             partner.get("name") or "",
+                "profit_share_pct": float(partner.get("profit_share_pct") or 0.0),
+            },
+            "totals": {
+                "codes_total":      total,
+                "codes_active":     active,
+                "codes_used":       used,
+                "codes_revoked":    revoked,
+                "campaigns_active": campaigns_active,
+            },
+            "mtd": {
+                "redemptions": red_month,
+            },
+        }
+
+    async def admin_partner_summary(self, partner_id: str) -> Dict[str, Any]:
+        """Admin-only summary — includes financial figures."""
+        partner = await self.partner_repo.find_by_id(partner_id)
+        if not partner:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Partner not found")
+
+        now = _now()
+        month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
         sales_total = await self.redemption_repo.sum_amounts(partner_id=partner_id)
         sales_month = await self.redemption_repo.sum_amounts(partner_id=partner_id, since=month_start)
-
         share_pct = float(partner.get("profit_share_pct") or 0.0)
-        payout_total = round(sales_total["paid"] * share_pct / 100.0, 2)
-        payout_month = round(sales_month["paid"] * share_pct / 100.0, 2)
 
         return {
             "partner_id":        partner_id,
-            "total_codes":       total,
-            "used_codes":        used,
-            "reserved_codes":    reserved,
-            "active_codes":      active,
-            "expired_codes":     expired,
-            "revoked_codes":     revoked,
-            "total_campaigns":   campaigns,
-            "redemptions_total": red_total,
-            "redemptions_month": red_month,
+            "profit_share_pct":  share_pct,
             "gross_sales_total": sales_total["paid"],
             "gross_sales_month": sales_month["paid"],
-            "payout_total":      payout_total,
-            "payout_month":      payout_month,
-            "profit_share_pct":  share_pct,
+            "discount_total":    sales_total["discount"],
+            "discount_month":    sales_month["discount"],
+            "payout_total":      round(sales_total["paid"] * share_pct / 100.0, 2),
+            "payout_month":      round(sales_month["paid"] * share_pct / 100.0, 2),
         }
 
     # ── Maintenance ──────────────────────────────────────────
 
     async def expire_due_codes(self) -> int:
         return await self.code_repo.expire_due(before=_now())
+
+    async def release_stale_reservations(self, *, ttl_minutes: int = 15) -> int:
+        """Release reserved codes that have been stuck for longer than ttl_minutes
+        (e.g. user abandoned checkout without paying or cancelling)."""
+        from datetime import timedelta
+        cutoff = _now() - timedelta(minutes=ttl_minutes)
+        return await self.code_repo.release_stale(before=cutoff)

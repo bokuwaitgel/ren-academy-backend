@@ -37,11 +37,13 @@ from src.services.promo_service import PromoService
 load_dotenv()
 
 _PROMO_EXPIRY_INTERVAL_SEC = int(os.getenv("PROMO_EXPIRY_INTERVAL_SEC", "3600"))
+_PROMO_RESERVATION_TTL_MIN = int(os.getenv("PROMO_RESERVATION_TTL_MIN", "15"))
 _log = logging.getLogger("promo.expiry")
 
 
 async def _promo_expiry_loop(db) -> None:
-    """Background task — runs every hour, expires past-due promo codes."""
+    """Background task — runs every hour, expires past-due promo codes and
+    releases stale reservations back to the active pool."""
     promo = PromoService(
         partner_repo=PartnerRepository(db),
         campaign_repo=CampaignRepository(db),
@@ -53,6 +55,11 @@ async def _promo_expiry_loop(db) -> None:
             n = await promo.expire_due_codes()
             if n:
                 _log.info("[promo-expiry] expired %d code(s)", n)
+            released = await promo.release_stale_reservations(
+                ttl_minutes=_PROMO_RESERVATION_TTL_MIN,
+            )
+            if released:
+                _log.info("[promo-expiry] released %d stale reservation(s)", released)
         except Exception as exc:  # noqa: BLE001
             _log.warning("[promo-expiry] task error: %s", exc)
         await asyncio.sleep(_PROMO_EXPIRY_INTERVAL_SEC)

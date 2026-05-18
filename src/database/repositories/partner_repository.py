@@ -151,7 +151,9 @@ class PromoCodeRepository:
         await self.col.create_index("partner_id")
         await self.col.create_index("status")
         await self.col.create_index("order_id")
+        await self.col.create_index("reserved_at")
         await self.col.create_index([("partner_id", 1), ("status", 1)])
+        await self.col.create_index([("campaign_id", 1), ("status", 1), ("reserved_by", 1)])
 
     async def bulk_insert(self, docs: List[dict]) -> int:
         if not docs:
@@ -262,6 +264,37 @@ class PromoCodeRepository:
             {"$set": {"status": "expired", "updated_at": datetime.now(timezone.utc)}},
         )
         return result.modified_count
+
+    async def release_stale(self, *, before: datetime) -> int:
+        """Return reservations back to `active` if they have been held since `before`
+        without being committed. Triggered by the background reaper."""
+        now = datetime.now(timezone.utc)
+        result = await self.col.update_many(
+            {"status": "reserved", "reserved_at": {"$lt": before}},
+            {"$set": {"status": "active", "updated_at": now},
+             "$unset": {"order_id": "", "reserved_by": "", "reserved_at": ""}},
+        )
+        return result.modified_count
+
+    async def user_has_reservation_in_campaign(
+        self,
+        *,
+        user_id: str,
+        campaign_id: str,
+        code: Optional[str] = None,
+    ) -> bool:
+        """True if `user_id` currently holds a `reserved` code in `campaign_id`.
+        Pass `code` to exclude that specific code (used when re-previewing the same
+        code the user already holds — that case is handled by invoice reuse)."""
+        query: Dict[str, Any] = {
+            "campaign_id": campaign_id,
+            "status":      "reserved",
+            "reserved_by": user_id,
+        }
+        if code:
+            query["code"] = {"$ne": code.upper()}
+        doc = await self.col.find_one(query)
+        return doc is not None
 
 
 # ─────────────────────────────────────────────
