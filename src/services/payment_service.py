@@ -301,15 +301,19 @@ class PaymentService:
                 )
 
         # Reuse an existing pending order so the user doesn't get a fresh QR every click.
-        # (Only when no promo code was supplied — a new promo means a new pricing.)
-        if not promo_code:
-            existing_pending = await self.order_repo.find_active_pending(
-                user_id,
-                test_id,
-                purchase_mode=mode,
-                purchase_section=section if mode == "practice" else None,
-            )
-            if existing_pending and existing_pending.get("qpay_invoice_id"):
+        # If promo is provided, we reuse only when the same promo code was used.
+        existing_pending = await self.order_repo.find_active_pending(
+            user_id,
+            test_id,
+            purchase_mode=mode,
+            purchase_section=section if mode == "practice" else None,
+        )
+        if existing_pending and existing_pending.get("qpay_invoice_id"):
+            if not promo_code:
+                return existing_pending
+            pending_promo = str(existing_pending.get("promo_code") or "").strip().upper()
+            requested_promo = str(promo_code).strip().upper()
+            if pending_promo and pending_promo == requested_promo:
                 return existing_pending
 
         order_doc: Dict[str, Any] = {
