@@ -369,6 +369,52 @@ for name, info in ENDPOINTS.items():
     )
 
 @app.post(
+    "/api/storage/admin/s3/upload-question-multipart",
+    tags=["Storage"],
+    summary="Upload admin question file (multipart)",
+    description=(
+        "Upload question media (audio/image/etc.) as multipart/form-data. "
+        "Avoids base64 inflation for large files.\n\n"
+        "section: listening, reading, writing, speaking\n"
+        "sub_path: optional sub-directory (e.g. audio, images)"
+    ),
+)
+async def admin_upload_question_multipart(
+    module_type: str = Form(...),
+    test_id: str = Form(...),
+    section: str = Form(...),
+    file: UploadFile = File(...),
+    sub_path: str | None = Form(default=None),
+    base_prefix: str = Form(default="questions"),
+    content_type: str | None = Form(default=None),
+    authorization: str | None = Header(default=None, alias="Authorization"),
+):
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="Missing token")
+    db = MongoDB.get_db()
+    user = await AuthService(UserRepository(db)).get_current_user(authorization.split(" ", 1)[1].strip())
+    allowed_roles = {"admin", "super_admin", "super-admin"}
+    if user.role not in allowed_roles:
+        raise HTTPException(status_code=403, detail="Access denied. Required role: admin")
+
+    file_bytes = await file.read()
+    if not file_bytes:
+        raise HTTPException(status_code=400, detail="File content is empty")
+
+    resolved_ct = content_type or file.content_type
+    return S3StorageService().upload_bytes(
+        module_type=module_type,
+        test_id=test_id,
+        section=section,
+        file_name=file.filename or "file",
+        file_bytes=file_bytes,
+        content_type=resolved_ct,
+        base_prefix=base_prefix,
+        sub_path=sub_path,
+    )
+
+
+@app.post(
     "/api/speaking/upload/file",
     tags=["Speaking"],
     summary="Upload speaking audio file (multipart) and save URL to session",
