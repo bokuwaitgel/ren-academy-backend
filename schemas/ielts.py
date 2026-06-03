@@ -38,9 +38,23 @@ class FormField(BaseModel):
     answer: str = Field(..., examples=["Johnson"])
 
 class TableCell(BaseModel):
-    row_header: str = Field(..., examples=["Monday"])
-    col_header: str = Field(..., examples=["Time"])
+    # row_header / col_header are only used by the simple grid layout. For rich
+    # tables (table_layout) the blanks live inline in the cells, so a TableCell
+    # is just an ordered answer slot — its index (0-based) maps to placeholder
+    # {n} where n = index + 1.
+    row_header: str = Field(default="", examples=["Monday"])
+    col_header: str = Field(default="", examples=["Time"])
     answer:     str = Field(..., examples=["9:00 AM"])
+
+class TableLayout(BaseModel):
+    """Free-form table grid with blanks embedded inline in cell text.
+
+    Cells may contain {n} placeholders (e.g. "The {2} is a good place for a
+    drink"). Each {n} refers to the answer in table_cells[n - 1]. Header cells
+    simply contain plain text with no placeholder.
+    """
+    columns: List[str]            = Field(..., examples=[["Name", "Location", "Reason"]])
+    rows:    List[List[str]]      = Field(..., examples=[[["Paloma", "Bow Street", "{3} food, good for sharing"]]])
 
 class FlowStep(BaseModel):
     step_number: int  = Field(..., ge=1)
@@ -145,6 +159,7 @@ class QuestionBase(BaseModel):
     correct_options:   Optional[List[str]]           = None   # Multi-select answers
     form_fields:       Optional[List[FormField]]     = None
     table_cells:       Optional[List[TableCell]]     = None
+    table_layout:      Optional[TableLayout]         = None
     flow_steps:        Optional[List[FlowStep]]      = None
     sentences:         Optional[List[SentenceItem]]  = None
     summary_items:     Optional[List[SummaryItem]]   = None
@@ -225,6 +240,7 @@ class QuestionUpdate(BaseModel):
     correct_options:   Optional[List[str]]      = None
     form_fields:       Optional[List[FormField]] = None
     table_cells:       Optional[List[TableCell]] = None
+    table_layout:      Optional[TableLayout]     = None
     flow_steps:        Optional[List[FlowStep]]  = None
     sentences:         Optional[List[SentenceItem]] = None
     summary_items:     Optional[List[SummaryItem]]  = None
@@ -273,6 +289,7 @@ class QuestionSafe(BaseModel):
     # Structural items (blanks only, no answers)
     form_fields:       Optional[List[Dict[str, Any]]]   = None
     table_cells:       Optional[List[Dict[str, Any]]]   = None
+    table_layout:      Optional[TableLayout]            = None
     flow_steps:        Optional[List[Dict[str, Any]]]   = None
     sentences:         Optional[List[Dict[str, Any]]]   = None
     summary_items:     Optional[List[Dict[str, Any]]]   = None

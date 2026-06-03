@@ -2,6 +2,7 @@
 IELTS Service — business logic for questions, tests, sessions, and scoring.
 """
 
+import re
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -219,6 +220,23 @@ def _extract_question_prompts(q: dict) -> Dict[str, str] | None:
         }
 
     if q_type == QuestionType.TABLE_COMPLETION:
+        layout = q.get("table_layout")
+        if layout and layout.get("rows"):
+            # Rich layout: locate each {n} placeholder and describe it by its
+            # column header plus the cell text (with the blank shown as ____).
+            columns = layout.get("columns") or []
+            prompts: Dict[str, str] = {}
+            for row in layout.get("rows") or []:
+                for col_idx, cell in enumerate(row):
+                    cell_text = str(cell or "")
+                    for m in re.finditer(r"\{(\d+)\}", cell_text):
+                        n = int(m.group(1))
+                        col_header = str(columns[col_idx]).strip() if col_idx < len(columns) else ""
+                        blank_text = re.sub(r"\{\d+\}", "____", cell_text).strip()
+                        prompt = f"{col_header}: {blank_text}".strip(" :") if col_header else blank_text
+                        prompts[str(n - 1)] = prompt
+            if prompts:
+                return prompts
         items = q.get("table_cells") or []
         return {
             str(i): " / ".join(
