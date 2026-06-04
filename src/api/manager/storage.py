@@ -95,6 +95,20 @@ async def list_media(data: dict):
 
 
 @register(
+    name="storage/admin/s3/delete-media",
+    method="POST",
+    required_keys=["key"],
+    summary="Delete uploaded media",
+    description="Permanently delete an uploaded media object from S3 (admin only). Restricted to the 'questions/' folder.",
+    tags=["Storage"],
+)
+async def delete_media(data: dict):
+    user = await _current_user(data)
+    _require_roles(user, "admin")
+    return S3StorageService().delete_object(str(data.get("key") or ""))
+
+
+@register(
     name="storage/admin/s3/upload-question-file",
     method="POST",
     required_keys=["module_type", "test_id", "section", "file_name", "file_content_base64"],

@@ -293,6 +293,26 @@ class S3StorageService:
             "content_type": content_type,
         }
 
+    def delete_object(self, key: str) -> dict:
+        """Delete a single object from the bucket.
+
+        Restricted to the managed question-media root ('questions/') so this can
+        never remove candidate session data or unrelated objects.
+        """
+        key = str(key or "").strip()
+        if not key or key.endswith("/"):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="A valid object key is required")
+        if not key.startswith("questions/"):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Refusing to delete outside the question-media folder")
+        try:
+            self.client.delete_object(Bucket=self.bucket, Key=key)
+        except ClientError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Failed to delete S3 object: {exc}",
+            )
+        return {"deleted": True, "key": key}
+
     def upload_question_file(
         self,
         module_type: str,
