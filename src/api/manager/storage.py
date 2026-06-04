@@ -69,6 +69,32 @@ async def create_question_structure(data: dict):
 
 
 @register(
+    name="storage/admin/s3/list-media",
+    method="GET",
+    required_keys=[],
+    optional_keys={"kind": None, "search": None, "prefix": "questions", "limit": 200},
+    summary="List uploaded media",
+    description=(
+        "List previously uploaded question media (audio/images) from S3 so it can be "
+        "reused instead of re-uploaded.\n\n"
+        "kind: 'audio' or 'images' (omit for both)\n"
+        "search: case-insensitive filter over the file name\n"
+        "prefix: S3 prefix to scan (default 'questions')"
+    ),
+    tags=["Storage"],
+)
+async def list_media(data: dict):
+    user = await _current_user(data)
+    _require_roles(user, "admin", "examiner")
+    return S3StorageService().list_media(
+        kind=data.get("kind"),
+        search=data.get("search"),
+        prefix=str(data.get("prefix") or "questions"),
+        limit=data.get("limit", 200),
+    )
+
+
+@register(
     name="storage/admin/s3/upload-question-file",
     method="POST",
     required_keys=["module_type", "test_id", "section", "file_name", "file_content_base64"],

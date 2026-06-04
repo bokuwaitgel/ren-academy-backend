@@ -21,6 +21,18 @@ class S3StorageService:
         "speaking": ["audio", "prompts"],
     }
 
+    # File extensions classified for the reusable media library.
+    AUDIO_EXTS = {".mp3", ".mpeg", ".mpga", ".wav", ".m4a", ".aac", ".ogg", ".oga", ".webm", ".flac"}
+    IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg", ".bmp", ".avif"}
+    _CONTENT_TYPES = {
+        ".mp3": "audio/mpeg", ".mpeg": "audio/mpeg", ".mpga": "audio/mpeg",
+        ".wav": "audio/wav", ".m4a": "audio/mp4", ".aac": "audio/aac",
+        ".ogg": "audio/ogg", ".oga": "audio/ogg", ".webm": "audio/webm", ".flac": "audio/flac",
+        ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
+        ".gif": "image/gif", ".webp": "image/webp", ".svg": "image/svg+xml",
+        ".bmp": "image/bmp", ".avif": "image/avif",
+    }
+
     def __init__(self):
         access_key = os.getenv("AWS_ACCESS_KEY")
         secret_key = os.getenv("AWS_SECRET")
@@ -69,6 +81,91 @@ class S3StorageService:
     def _object_url(self, key: str) -> str:
         encoded_key = quote(key, safe="/-_.~")
         return f"https://{self.bucket}.s3.{self.region}.amazonaws.com/{encoded_key}"
+
+    def _safe_prefix(self, prefix: str) -> str:
+        """Sanitize a multi-segment S3 prefix, preserving '/' separators."""
+        segments = [self._safe_part(seg) for seg in str(prefix).split("/") if seg.strip()]
+        return "/".join(segments)
+
+    @classmethod
+    def _classify(cls, ext: str) -> str | None:
+        if ext in cls.AUDIO_EXTS:
+            return "audio"
+        if ext in cls.IMAGE_EXTS:
+            return "images"
+        return None
+
+    def list_media(
+        self,
+        kind: str | None = None,
+        search: str | None = None,
+        prefix: str = "questions",
+        limit: int = 200,
+    ) -> dict:
+        """List previously uploaded media objects under a prefix, for reuse.
+
+        Classifies each object as 'audio' or 'images' by file extension. Supports
+        an optional `kind` filter and a case-insensitive `search` over the file
+        name/key. Returns the most recently modified items first.
+        """
+        base = self._safe_prefix(prefix) or "questions"
+        list_prefix = f"{base}/"
+        kind_filter = (kind or "").strip().lower() or None
+        needle = (search or "").strip().lower() or None
+        try:
+            limit = max(1, min(int(limit), 1000))
+        except (TypeError, ValueError):
+            limit = 200
+
+        items: List[dict] = []
+        token: str | None = None
+        scanned = 0
+        try:
+            while True:
+                kwargs: dict = {"Bucket": self.bucket, "Prefix": list_prefix, "MaxKeys": 1000}
+                if token:
+                    kwargs["ContinuationToken"] = token
+                resp = self.client.list_objects_v2(**kwargs)
+
+                for obj in resp.get("Contents", []):
+                    key = obj["Key"]
+                    if key.endswith("/"):
+                        continue  # folder placeholder
+                    size = int(obj.get("Size", 0))
+                    if size == 0:
+                        continue
+                    filename = key.rsplit("/", 1)[-1]
+                    ext = ("." + filename.rsplit(".", 1)[-1].lower()) if "." in filename else ""
+                    item_kind = self._classify(ext)
+                    if item_kind is None:
+                        continue
+                    if kind_filter and item_kind != kind_filter:
+                        continue
+                    if needle and needle not in filename.lower() and needle not in key.lower():
+                        continue
+                    last_modified = obj.get("LastModified")
+                    items.append({
+                        "key": key,
+                        "url": self._object_url(key),
+                        "filename": filename,
+                        "size": size,
+                        "kind": item_kind,
+                        "content_type": self._CONTENT_TYPES.get(ext),
+                        "last_modified": last_modified.isoformat() if last_modified else None,
+                    })
+
+                scanned += len(resp.get("Contents", []))
+                token = resp.get("NextContinuationToken")
+                if not token or scanned >= 5000:
+                    break
+        except ClientError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Failed to list S3 media: {exc}",
+            )
+
+        items.sort(key=lambda it: it["last_modified"] or "", reverse=True)
+        return {"items": items[:limit], "count": len(items)}
 
     def create_question_bucket_structure(
         self,

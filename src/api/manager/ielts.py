@@ -83,7 +83,7 @@ async def _require_admin_or_examiner(payload: dict):
     optional_keys={
         "tags": [], "context": None, "passage": None, "audio_url": None, "image_url": None,
         "options": None, "correct_option": None, "correct_options": None,
-        "form_fields": None, "table_cells": None, "flow_steps": None,
+        "form_fields": None, "table_cells": None, "table_layout": None, "flow_steps": None,
         "sentences": None, "summary_items": None, "short_items": None,
         "map_word_box": None, "map_slots": None, "matching_items": None,
         "heading_options": None, "heading_items": None, "tfng_items": None,
@@ -148,7 +148,7 @@ async def question_get(data: dict):
         "title": None, "instruction": None, "context": None, "passage": None,
         "audio_url": None, "image_url": None, "tags": None,
         "options": None, "correct_option": None, "correct_options": None,
-        "form_fields": None, "table_cells": None, "flow_steps": None,
+        "form_fields": None, "table_cells": None, "table_layout": None, "flow_steps": None,
         "sentences": None, "summary_items": None, "short_items": None,
         "map_word_box": None, "map_slots": None, "matching_items": None,
         "heading_options": None, "heading_items": None, "tfng_items": None,
