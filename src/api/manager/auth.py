@@ -1,7 +1,7 @@
 from fastapi import HTTPException, status
 from pydantic import ValidationError
 
-from src.api.api_routes import register
+from src.api.api_routes import register, validation_detail
 from src.database.mongodb import MongoDB
 from src.database.repositories.user_repository import UserRepository
 from src.services.auth_service import AuthService
@@ -28,7 +28,7 @@ async def auth_register(data: dict):
     try:
         payload = UserCreate(**data)
     except ValidationError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=exc.errors())
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=validation_detail(exc))
     return await _auth_service().register(payload)
 
 
@@ -37,7 +37,7 @@ async def auth_login(data: dict):
     try:
         payload = UserLogin(**data)
     except ValidationError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=exc.errors())
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=validation_detail(exc))
     return await _auth_service().login(payload.email, payload.password)
 
 
@@ -46,7 +46,7 @@ async def auth_refresh(data: dict):
     try:
         payload = RefreshTokenRequest(**data)
     except ValidationError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=exc.errors())
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=validation_detail(exc))
     return await _auth_service().refresh(payload.refresh_token)
 
 

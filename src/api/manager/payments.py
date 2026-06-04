@@ -18,7 +18,7 @@ Admin-facing:
 from fastapi import HTTPException, status
 from pydantic import ValidationError
 
-from src.api.api_routes import register
+from src.api.api_routes import register, validation_detail
 from src.database.mongodb import MongoDB
 from src.database.repositories.ielts_repository import (
     OrderRepository,
@@ -118,7 +118,7 @@ async def payments_create_invoice(data: dict):
     try:
         payload = OrderCreateRequest(**data)
     except ValidationError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=exc.errors())
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=validation_detail(exc))
     svc, _ = _services()
     return await svc.create_order(
         user_id=user.id,
@@ -144,7 +144,7 @@ async def payments_promo_validate(data: dict):
     try:
         req = PromoValidateRequest(**data)
     except ValidationError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=exc.errors())
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=validation_detail(exc))
 
     svc, _ = _services()
     test = await svc.test_repo.find_by_id(req.test_id)

@@ -3,7 +3,7 @@ from pydantic import ValidationError
 
 from schemas.auth import UserResponse
 from schemas.storage import S3QuestionFileUploadRequest, S3StructureCreateRequest
-from src.api.api_routes import register
+from src.api.api_routes import register, validation_detail
 from src.database.mongodb import MongoDB
 from src.database.repositories.ielts_repository import TestSessionRepository
 from src.database.repositories.user_repository import UserRepository
@@ -58,7 +58,7 @@ async def create_question_structure(data: dict):
     try:
         payload = S3StructureCreateRequest(**payload_data)
     except ValidationError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=exc.errors())
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=validation_detail(exc))
 
     return S3StorageService().create_question_bucket_structure(
         module_type=payload.module_type,
@@ -81,7 +81,7 @@ async def upload_question_file(data: dict):
     try:
         payload = S3QuestionFileUploadRequest(**payload_data)
     except ValidationError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=exc.errors())
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=validation_detail(exc))
 
     return S3StorageService().upload_question_file(
         module_type=payload.module_type,

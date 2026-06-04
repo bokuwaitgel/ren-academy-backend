@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from bson import ObjectId  # type: ignore[import-untyped]
 from fastapi import HTTPException, status
 
-from src.api.api_routes import register
+from src.api.api_routes import register, validation_detail
 from src.database.mongodb import MongoDB
 from src.database.repositories.ielts_repository import (
     QuestionRepository,
@@ -155,7 +155,7 @@ async def admin_users_create(data: dict):
     try:
         payload = UserCreate(**payload_data)
     except ValidationError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=exc.errors())
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=validation_detail(exc))
     return await auth_svc.register(payload)
 
 

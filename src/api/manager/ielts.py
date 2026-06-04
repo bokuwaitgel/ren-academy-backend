@@ -5,7 +5,7 @@ IELTS API endpoints — question CRUD, test management, user test-taking.
 from fastapi import HTTPException, status
 from pydantic import ValidationError
 
-from src.api.api_routes import register
+from src.api.api_routes import register, validation_detail
 from src.database.mongodb import MongoDB
 from src.database.repositories.ielts_repository import (
     OrderRepository,
@@ -100,7 +100,7 @@ async def question_create(data: dict):
     try:
         payload = QuestionCreate(**data)
     except ValidationError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=exc.errors())
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=validation_detail(exc))
     return await _ielts_service().create_question(payload)
 
 
@@ -166,7 +166,7 @@ async def question_update(data: dict):
     try:
         payload = QuestionUpdate(**data)
     except ValidationError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=exc.errors())
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=validation_detail(exc))
     return await _ielts_service().update_question(qid, payload)
 
 
@@ -199,7 +199,7 @@ async def question_bulk_create(data: dict):
     try:
         payloads = [QuestionCreate(**q) for q in raw_list]
     except ValidationError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=exc.errors())
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=validation_detail(exc))
     return await _ielts_service().bulk_create_questions(payloads)
 
 
@@ -228,7 +228,7 @@ async def test_create(data: dict):
     try:
         payload = TestCreate(**data)
     except ValidationError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=exc.errors())
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=validation_detail(exc))
     return await _ielts_service().create_test(payload)
 
 
@@ -351,7 +351,7 @@ async def test_update(data: dict):
     try:
         payload = TestUpdate(**data)
     except ValidationError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=exc.errors())
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=validation_detail(exc))
     return await _ielts_service().update_test(tid, payload)
 
 

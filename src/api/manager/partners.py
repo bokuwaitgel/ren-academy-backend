@@ -30,7 +30,7 @@ import csv
 from fastapi import HTTPException, status
 from pydantic import ValidationError
 
-from src.api.api_routes import register
+from src.api.api_routes import register, validation_detail
 from src.database.mongodb import MongoDB
 from src.database.repositories.partner_repository import (
     CampaignRepository,
@@ -219,7 +219,7 @@ async def admin_partners_create(data: dict):
     try:
         req = PartnerCreateRequest(**data)
     except ValidationError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=exc.errors())
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=validation_detail(exc))
     repos = _repos()
 
     # Validate optional owner user
@@ -257,7 +257,7 @@ async def admin_partners_update(data: dict):
     try:
         req = PartnerUpdateRequest(**data)
     except ValidationError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=exc.errors())
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=validation_detail(exc))
     repos = _repos()
     update = {k: v for k, v in req.model_dump(exclude_none=True).items()}
     if "status" in update and hasattr(update["status"], "value"):
@@ -328,7 +328,7 @@ async def admin_campaigns_create(data: dict):
     try:
         req = CampaignCreateRequest(**data)
     except ValidationError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=exc.errors())
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=validation_detail(exc))
 
     if req.code_type == CampaignType.DISCOUNT and not req.discount_pct:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
@@ -381,7 +381,7 @@ async def admin_campaigns_update(data: dict):
     try:
         req = CampaignUpdateRequest(**data)
     except ValidationError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=exc.errors())
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=validation_detail(exc))
     repos = _repos()
     update = {k: v for k, v in req.model_dump(exclude_none=True).items()}
     if "status" in update and hasattr(update["status"], "value"):

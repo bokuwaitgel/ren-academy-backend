@@ -1,10 +1,21 @@
 from __future__ import annotations
 
 from copy import deepcopy as cp
-from typing import Any, Awaitable, Callable, Dict, Mapping
+from typing import Any, Awaitable, Callable, Dict, List, Mapping
 from fastapi import FastAPI, HTTPException
+from pydantic import ValidationError
 
 Handler = Callable[[Dict[str, Any]], Awaitable[Any]]
+
+
+def validation_detail(exc: ValidationError) -> List[Dict[str, Any]]:
+    """Return JSON-serializable validation errors for use as an HTTPException detail.
+
+    Pydantic v2's ``exc.errors()`` embeds the raw exception object raised by custom
+    validators in each error's ``ctx`` field, which is not JSON serializable and crashes
+    response rendering. Dropping ``ctx`` (and the docs ``url``) keeps the payload clean.
+    """
+    return exc.errors(include_url=False, include_context=False)
 
 
 def _as_dict_payload(data: Any) -> Dict[str, Any]:
