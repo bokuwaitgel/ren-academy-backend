@@ -747,6 +747,18 @@ class IeltsService:
 
         test_section_values = _get_available_sections(test)
 
+        if mode == SessionMode.FULL_TEST.value:
+            missing = [s for s in IELTS_SECTION_ORDER if s not in test_section_values]
+            if missing:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=(
+                        "Full test requires all four sections "
+                        "(listening, reading, writing, speaking). "
+                        f"Missing: {', '.join(missing)}."
+                    ),
+                )
+
         if mode == SessionMode.PRACTICE.value:
             if not section:
                 raise HTTPException(
