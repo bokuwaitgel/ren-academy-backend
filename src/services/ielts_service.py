@@ -1666,6 +1666,92 @@ class IeltsService:
         doc = await self.session_repo.update(session_id, update_data)
         return TestSessionOut(**doc)
 
+    async def rescore_objective_sections(self, session_id: str) -> TestSessionOut:
+        """
+        Recompute listening/reading scores from stored answers using the current
+        scoring rules (e.g. number-word normalization). Rebuilds answer details,
+        section bands, and the overall band.
+        """
+        session = await self._get_session_or_fail(session_id)
+        if session["status"] not in {TestStatus.SUBMITTED.value, TestStatus.GRADED.value}:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Session must be submitted first")
+
+        test = await self.test_repo.find_by_id(session["test_id"])
+        if not test:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Test not found")
+
+        is_academic = test.get("module_type", "academic") == ModuleType.ACADEMIC.value
+        answers: Dict[str, Any] = session.get("answers", {}) or {}
+        section_scores: List[Dict[str, Any]] = session.get("section_scores") or []
+
+        rescored = False
+        for section in (SectionType.LISTENING.value, SectionType.READING.value):
+            if section not in answers:
+                continue
+            q_ids = _get_question_ids_for_section(test, section)
+            questions = await self.question_repo.find_many(q_ids) if q_ids else []
+            if not questions:
+                continue
+            section_answers = answers.get(section, {}) or {}
+
+            total_earned = 0
+            total_max = 0
+            answer_details: List[Dict[str, Any]] = []
+            for q in questions:
+                user_ans = section_answers.get(q["id"])
+                earned, max_pts = _score_question(q, user_ans)
+                total_earned += earned
+                total_max += max_pts
+                answer_details.append({
+                    "question_id": q["id"],
+                    "title": q.get("title", ""),
+                    "type": q.get("type", ""),
+                    "question_prompts": _extract_question_prompts(q),
+                    "user_answer": user_ans,
+                    "correct_answer": _extract_correct_answer(q),
+                    "is_correct": earned == max_pts and max_pts > 0,
+                    "earned": earned,
+                    "max": max_pts,
+                })
+
+            if section == SectionType.LISTENING.value:
+                band = raw_to_band_listening(total_earned)
+            else:
+                band = raw_to_band_reading(total_earned, is_academic=is_academic)
+
+            section_scores = [s for s in section_scores if s.get("section") != section]
+            section_scores.append({
+                "section": section,
+                "raw_score": total_earned,
+                "max_score": total_max,
+                "band_score": band,
+                "details": {
+                    "answer_details": answer_details,
+                    "section_context": _extract_section_context(test, section),
+                },
+            })
+            rescored = True
+
+        if not rescored:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No listening/reading answers to rescore")
+
+        band_map = {sc["section"]: sc.get("band_score") for sc in section_scores}
+        overall = session.get("overall_band")
+        if all(s.value in band_map and band_map[s.value] is not None
+               for s in [SectionType.LISTENING, SectionType.READING, SectionType.WRITING, SectionType.SPEAKING]):
+            overall = calculate_overall_band(
+                band_map[SectionType.LISTENING.value],
+                band_map[SectionType.READING.value],
+                band_map[SectionType.WRITING.value],
+                band_map[SectionType.SPEAKING.value],
+            )
+
+        doc = await self.session_repo.update(session_id, {
+            "section_scores": section_scores,
+            "overall_band": overall,
+        })
+        return TestSessionOut(**doc)
+
     async def get_dashboard_stats(self, user_repo) -> dict:
         """Aggregate stats for admin dashboard."""
         from src.database.repositories.ielts_repository import _serialize

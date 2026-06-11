@@ -329,6 +329,19 @@ async def admin_sessions_grade(data: dict):
 
 
 @register(
+    name="admin/sessions/rescore",
+    method="POST",
+    required_keys=["session_id"],
+    summary="Re-score listening/reading (admin)",
+    description="Recompute listening/reading scores from stored answers using current scoring rules (e.g. number-word normalization) and update the overall band.",
+    tags=["Admin"],
+)
+async def admin_sessions_rescore(data: dict):
+    user, ielts_svc, auth_svc, user_repo = await _require_admin_or_examiner(data)
+    return await ielts_svc.rescore_objective_sections(data["session_id"])
+
+
+@register(
     name="admin/sessions/delete",
     method="DELETE",
     required_keys=["session_id"],
