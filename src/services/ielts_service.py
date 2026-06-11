@@ -434,18 +434,110 @@ def _score_question(question: dict, user_answer: Any) -> tuple[int, int]:
     return 0, 0
 
 
+# Number words → digits, so "thirty" matches "30" and "twenty-five" matches "25".
+_NUM_UNITS = {
+    "zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+    "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+    "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14, "fifteen": 15,
+    "sixteen": 16, "seventeen": 17, "eighteen": 18, "nineteen": 19,
+}
+_NUM_TENS = {
+    "twenty": 20, "thirty": 30, "forty": 40, "fifty": 50,
+    "sixty": 60, "seventy": 70, "eighty": 80, "ninety": 90,
+}
+_NUM_SCALES = {"hundred": 100, "thousand": 1_000, "million": 1_000_000}
+
+
+def _words_to_number(tokens: list) -> int | None:
+    """Convert a sequence of number-word tokens to an int. None if not a valid number phrase."""
+    total = 0
+    current = 0
+    seen = False
+    prev = "start"  # start | unit | teen | tens | scale
+    for tok in tokens:
+        if tok == "and":
+            continue
+        if tok in _NUM_UNITS:
+            val = _NUM_UNITS[tok]
+            # "five six" / "nineteen ninety" style sequences are not one number
+            if prev in ("unit", "teen") or (prev == "tens" and not 1 <= val <= 9):
+                return None
+            current += val
+            prev = "unit" if 1 <= val <= 9 else "teen"
+            seen = True
+        elif tok in _NUM_TENS:
+            if prev in ("unit", "teen", "tens"):
+                return None
+            current += _NUM_TENS[tok]
+            prev = "tens"
+            seen = True
+        elif tok in _NUM_SCALES:
+            if not seen:
+                current = 1
+            scale = _NUM_SCALES[tok]
+            if scale == 100:
+                current *= scale
+            else:
+                total += current * scale
+                current = 0
+            prev = "scale"
+            seen = True
+        else:
+            return None
+    return total + current if seen else None
+
+
+def _is_num_word(tok: str) -> bool:
+    return tok in _NUM_UNITS or tok in _NUM_TENS or tok in _NUM_SCALES
+
+
+def _normalize_answer(text: str) -> str:
+    """Lowercase, collapse whitespace, and convert number-word phrases to digits."""
+    text = text.strip().lower()
+    # Split hyphenated number words ("twenty-five" → "twenty five")
+    text = re.sub(r"(?<=[a-z])-(?=[a-z])", " ", text)
+    tokens = text.split()
+    out: list[str] = []
+    i = 0
+    while i < len(tokens):
+        if _is_num_word(tokens[i]):
+            j = i
+            while j < len(tokens) and (_is_num_word(tokens[j]) or (tokens[j] == "and" and j > i)):
+                j += 1
+            # Drop trailing "and" from the group ("one hundred and" + non-number)
+            while j > i and tokens[j - 1] == "and":
+                j -= 1
+            # Convert the longest valid prefix; rest re-enters the loop
+            # ("nineteen ninety" → "19" + "90", not 109)
+            num = None
+            while j > i:
+                num = _words_to_number(tokens[i:j])
+                if num is not None:
+                    break
+                j -= 1
+                while j > i and tokens[j - 1] == "and":
+                    j -= 1
+            if num is not None:
+                out.append(str(num))
+                i = j
+                continue
+        out.append(tokens[i])
+        i += 1
+    return " ".join(out)
+
+
 def _score_fill_items(items: list, answer_key: str, user_answer: Any) -> tuple[int, int]:
     """Score fill-in-the-blank style items."""
     if not items:
         return 0, 0
     answers_map: Dict[str, str] = {}
     if isinstance(user_answer, dict):
-        answers_map = {str(k): str(v).strip().lower() for k, v in user_answer.items()}
+        answers_map = {str(k): _normalize_answer(str(v)) for k, v in user_answer.items()}
     elif isinstance(user_answer, list):
-        answers_map = {str(i): str(v).strip().lower() for i, v in enumerate(user_answer)}
+        answers_map = {str(i): _normalize_answer(str(v)) for i, v in enumerate(user_answer)}
     earned = 0
     for i, item in enumerate(items):
-        correct = str(item.get(answer_key, "")).strip().lower()
+        correct = _normalize_answer(str(item.get(answer_key, "")))
         given = answers_map.get(str(i), "")
         if given == correct:
             earned += 1
