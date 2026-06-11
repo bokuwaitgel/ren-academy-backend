@@ -1634,7 +1634,8 @@ class IeltsService:
             if sc.get("section") == section:
                 sc["band_score"] = band_score
                 if details:
-                    sc["details"] = details
+                    # Merge so manual grading keeps AI-generated data (answer_details, audio, evaluations)
+                    sc["details"] = {**(sc.get("details") or {}), **details}
                 updated = True
                 break
 
